@@ -88,6 +88,9 @@ func runProbe(ctx context.Context, args []string) error {
 	if *stdout {
 		cfg.Output.Stdout = true
 	}
+	// The CPE's busybox has no nohup, so the probe is started as a plain
+	// background job and must survive the login session ending.
+	signal.Ignore(syscall.SIGHUP)
 	app.ApplyRuntime(cfg.Runtime, log)
 	return app.Run(ctx, cfg, version, app.LiveHost(), log)
 }
