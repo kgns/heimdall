@@ -21,8 +21,16 @@ icmp:
 
 # Targets whose route leaves through an interface other than the default
 # route's (for example an operator management VLAN) are never probed.
+#
+# ttl: N sends the echo request towards ip with IP TTL N and measures the
+# router at hop N, which answers with ICMP time exceeded. Use it for ISP
+# routers that ignore echo requests addressed to themselves (common for the
+# PPP peer). It needs a raw ICMP socket. auto: gateway pings the default
+# route's next hop directly instead.
 targets:
-  - {id: gateway,        category: infra, service: isp-gateway, auto: gateway}
+  - {id: isp-hop1,       category: infra, service: isp-hop,     ip: 1.1.1.1, ttl: 1}
+  - {id: isp-hop2,       category: infra, service: isp-hop,     ip: 1.1.1.1, ttl: 2}
+  - {id: isp-hop3,       category: infra, service: isp-hop,     ip: 1.1.1.1, ttl: 3}
   - {id: cloudflare-dns, category: infra, service: cloudflare,  ip: 1.1.1.1}
   - {id: google-dns,     category: infra, service: google,      ip: 8.8.8.8}
   - {id: quad9-dns,      category: infra, service: quad9,       ip: 9.9.9.9}

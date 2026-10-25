@@ -92,7 +92,16 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		}
 		t := target.New(tc.ID, tc.Category, tc.Service, dst)
 		t.Auto = tc.Auto
+		t.TTL = tc.TTL
 		t.Interval = cfg.TargetInterval(tc)
+		if t.TTL > 0 && pinger.Mode() != icmp.ModeRaw {
+			// Datagram ICMP sockets do not deliver time exceeded errors.
+			log.Warn("TTL-limited target needs a raw ICMP socket; skipping", "target", t.ID, "icmp_mode", pinger.Mode())
+			rec.Emit(sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, TargetID: t.ID,
+				Category: t.Category, Service: t.Service,
+				Extra: map[string]any{"event": "target_unsupported", "reason": "ttl needs raw icmp", "icmp_mode": string(pinger.Mode())}})
+			continue
+		}
 		targets = append(targets, t)
 	}
 
@@ -115,11 +124,20 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 				if !ok {
 					return
 				}
-				r := pinger.Ping(ctx, dst, timeout)
+				r := pinger.Ping(ctx, dst, t.TTL, timeout)
 				if r.Status == "" {
 					return
 				}
-				rec.Emit(icmpSample(t, dst, r))
+				s := icmpSample(t, dst, r)
+				if t.TTL > 0 && s.Status == sample.StatusOK {
+					if prev, changed := t.ObserveHop(r.From); changed {
+						log.Info("hop changed", "target", t.ID, "ttl", t.TTL, "from", prev, "to", r.From)
+						rec.Emit(sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, TargetID: t.ID,
+							Category: t.Category, Service: t.Service, DstIP: r.From.String(),
+							Extra: map[string]any{"event": "hop_change", "ttl": t.TTL, "via": dst.String(), "prev": prev.String()}})
+					}
+				}
+				rec.Emit(s)
 			},
 		})
 	}
@@ -186,6 +204,9 @@ func icmpSample(t *target.Target, dst netip.Addr, r icmp.Result) sample.Sample {
 		DstIP:    dst.String(),
 		Status:   r.Status,
 	}
+	if t.TTL > 0 {
+		return hopSample(s, t, dst, r)
+	}
 	x := map[string]any{}
 	switch r.Status {
 	case sample.StatusOK:
@@ -205,6 +226,39 @@ func icmpSample(t *target.Target, dst netip.Addr, r icmp.Result) sample.Sample {
 	}
 	if len(x) > 0 {
 		s.Extra = x
+	}
+	return s
+}
+
+// hopSample describes a TTL-limited probe. The measured router is the one
+// that sent time exceeded, so it becomes dst_ip and the address the probe
+// was sent towards is kept as "via". An echo reply means the destination
+// is closer than the TTL, which is reported as an error.
+func hopSample(s sample.Sample, t *target.Target, via netip.Addr, r icmp.Result) sample.Sample {
+	x := map[string]any{"ttl_limit": t.TTL, "via": via.String()}
+	s.Extra = x
+	switch r.Status {
+	case sample.StatusTimeExceeded:
+		s.Status = sample.StatusOK
+		s.DstIP = r.From.String()
+		s.RTTms = sample.RTT(r.RTT)
+		if r.TTL >= 0 {
+			x["ttl"] = r.TTL
+		}
+	case sample.StatusOK:
+		s.Status = sample.StatusError
+		x["error"] = "destination reached before the TTL expired"
+	case sample.StatusUnreachable:
+		x["from"] = r.From.String()
+		x["icmp_type"] = r.ICMPType
+		x["icmp_code"] = r.ICMPCode
+	case sample.StatusError:
+		if r.Err != nil {
+			x["error"] = r.Err.Error()
+		}
+	}
+	if s.Status != sample.StatusOK {
+		s.DstIP = ""
 	}
 	return s
 }

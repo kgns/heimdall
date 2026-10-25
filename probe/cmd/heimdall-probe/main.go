@@ -111,6 +111,9 @@ func runCheck(args []string) error {
 		if t.Auto != "" {
 			dst = "auto:" + t.Auto
 		}
+		if t.TTL > 0 {
+			dst = fmt.Sprintf("hop %d via %s", t.TTL, t.IP)
+		}
 		fmt.Printf("  %-24s %-10s %-16s %-18s every %v\n", t.ID, t.Category, t.Service, dst, cfg.TargetInterval(t))
 	}
 	return nil

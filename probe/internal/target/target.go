@@ -16,11 +16,25 @@ type Target struct {
 	Service  string
 	// Auto names the source of a dynamic address, or is empty for a fixed
 	// address.
-	Auto     string
+	Auto string
+	// TTL, when non-zero, limits the probe's IP TTL so that the router at
+	// that hop answers instead of the destination.
+	TTL      int
 	Interval time.Duration
 
 	dst     atomic.Pointer[netip.Addr]
 	blocked atomic.Bool
+	hop     atomic.Pointer[netip.Addr]
+}
+
+// ObserveHop records the router that answered a TTL-limited probe and
+// returns the previously seen one when it changed.
+func (t *Target) ObserveHop(a netip.Addr) (prev netip.Addr, changed bool) {
+	old := t.hop.Swap(&a)
+	if old == nil || *old == a {
+		return netip.Addr{}, false
+	}
+	return *old, true
 }
 
 // New returns a target with a fixed or not yet known address.

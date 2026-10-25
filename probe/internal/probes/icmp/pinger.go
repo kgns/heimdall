@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net/netip"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -50,6 +51,9 @@ type Stats struct {
 	ReadErrors  uint64 `json:"read_errors"`
 	SeqExhaust  uint64 `json:"seq_exhausted"`
 	Outstanding int    `json:"outstanding"`
+	// ForeignTypes counts foreign messages by ICMP type number, so that
+	// other ICMP traffic on the host can be identified.
+	ForeignTypes map[string]uint64 `json:"foreign_types,omitempty"`
 }
 
 type reply struct {
@@ -94,6 +98,8 @@ type Pinger struct {
 
 	sent, replies, icmpErrors, timeouts, sendErrors atomic.Uint64
 	late, unmatched, foreign, readErrors, exhausted atomic.Uint64
+	// foreignTypes[256] counts messages too short to parse.
+	foreignTypes [257]atomic.Uint64
 
 	done chan struct{}
 }
@@ -150,19 +156,45 @@ func (p *Pinger) Stats() Stats {
 	p.mu.Lock()
 	out := len(p.pending)
 	p.mu.Unlock()
-	return Stats{
+	st := Stats{
 		Sent: p.sent.Load(), Replies: p.replies.Load(), Errors: p.icmpErrors.Load(),
 		Timeouts: p.timeouts.Load(), SendErrors: p.sendErrors.Load(), Late: p.late.Load(),
 		Unmatched: p.unmatched.Load(), Foreign: p.foreign.Load(), ReadErrors: p.readErrors.Load(),
 		SeqExhaust: p.exhausted.Load(), Outstanding: out,
 	}
+	for i := range p.foreignTypes {
+		n := p.foreignTypes[i].Load()
+		if n == 0 {
+			continue
+		}
+		if st.ForeignTypes == nil {
+			st.ForeignTypes = map[string]uint64{}
+		}
+		key := "short"
+		if i < 256 {
+			key = strconv.Itoa(i)
+		}
+		st.ForeignTypes[key] = n
+	}
+	return st
+}
+
+func (p *Pinger) countForeign(b []byte) {
+	p.foreign.Add(1)
+	if len(b) == 0 {
+		p.foreignTypes[256].Add(1)
+		return
+	}
+	p.foreignTypes[b[0]].Add(1)
 }
 
 var errSeqExhausted = errors.New("all ICMP sequence numbers in flight")
 
-// Ping sends one echo request to dst and waits up to timeout for an answer.
-// If ctx ends first the result has Status "" and Err set.
-func (p *Pinger) Ping(ctx context.Context, dst netip.Addr, timeout time.Duration) Result {
+// Ping sends one echo request to dst with IP TTL ttl (0 for the socket
+// default) and waits up to timeout for an answer: an echo reply, or an ICMP
+// error such as time exceeded from the router where the TTL ran out. If ctx
+// ends first the result has Status "" and Err set.
+func (p *Pinger) Ping(ctx context.Context, dst netip.Addr, ttl int, timeout time.Duration) Result {
 	fl := &inflight{dst: dst, ch: make(chan reply, 1)}
 
 	p.mu.Lock()
@@ -184,7 +216,7 @@ func (p *Pinger) Ping(ctx context.Context, dst netip.Addr, timeout time.Duration
 	p.pending[seq] = fl
 	p.mu.Unlock()
 
-	if err := p.conn.WriteTo(msg, dst); err != nil {
+	if err := p.conn.WriteTo(msg, dst, ttl); err != nil {
 		p.mu.Lock()
 		delete(p.pending, seq)
 		p.mu.Unlock()
@@ -275,14 +307,14 @@ func (p *Pinger) readLoop() {
 func (p *Pinger) handle(b []byte, src netip.Addr, ttl int, at time.Time) {
 	m, err := xicmp.ParseMessage(protocolICMP, b)
 	if err != nil {
-		p.foreign.Add(1)
+		p.countForeign(b)
 		return
 	}
 	switch m.Type {
 	case ipv4.ICMPTypeEchoReply:
 		echo, ok := m.Body.(*xicmp.Echo)
 		if !ok || !p.ours(uint16(echo.ID), echo.Data) {
-			p.foreign.Add(1)
+			p.countForeign(b)
 			return
 		}
 		p.deliver(uint16(echo.Seq), src, reply{at: at, status: sample.StatusOK, ttl: ttl, from: src})
@@ -297,13 +329,13 @@ func (p *Pinger) handle(b []byte, src netip.Addr, ttl int, at time.Time) {
 		}
 		dst, id, seq, ok := parseQuotedEcho(data)
 		if !ok || (p.conn.Mode() == ModeRaw && id != p.id) {
-			p.foreign.Add(1)
+			p.countForeign(b)
 			return
 		}
 		typ, _ := m.Type.(ipv4.ICMPType)
 		p.deliver(seq, dst, reply{at: at, status: status, ttl: ttl, from: src, typ: int(typ), cod: m.Code})
 	default:
-		p.foreign.Add(1)
+		p.countForeign(b)
 	}
 }
 

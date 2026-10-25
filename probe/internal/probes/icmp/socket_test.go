@@ -21,7 +21,7 @@ func TestLoopbackSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	r := p.Ping(context.Background(), netip.MustParseAddr("127.0.0.1"), 2*time.Second)
+	r := p.Ping(context.Background(), netip.MustParseAddr("127.0.0.1"), 0, 2*time.Second)
 	if r.Status != sample.StatusOK {
 		t.Fatalf("mode %s: %+v", p.Mode(), r)
 	}

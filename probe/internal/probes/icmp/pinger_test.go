@@ -23,6 +23,7 @@ type packet struct {
 
 type sent struct {
 	dst  netip.Addr
+	ttl  int
 	id   uint16
 	seq  uint16
 	data []byte
@@ -45,7 +46,7 @@ func newFake(mode Mode, respond func(f *fakeConn, s sent)) *fakeConn {
 
 func (f *fakeConn) Mode() Mode { return f.mode }
 
-func (f *fakeConn) WriteTo(b []byte, dst netip.Addr) error {
+func (f *fakeConn) WriteTo(b []byte, dst netip.Addr, ttl int) error {
 	if f.writeErr != nil {
 		return f.writeErr
 	}
@@ -54,7 +55,7 @@ func (f *fakeConn) WriteTo(b []byte, dst netip.Addr) error {
 		return err
 	}
 	e := m.Body.(*xicmp.Echo)
-	s := sent{dst: dst, id: uint16(e.ID), seq: uint16(e.Seq), data: append([]byte(nil), e.Data...)}
+	s := sent{dst: dst, ttl: ttl, id: uint16(e.ID), seq: uint16(e.Seq), data: append([]byte(nil), e.Data...)}
 	if f.respond != nil {
 		go f.respond(f, s)
 	}
@@ -139,7 +140,7 @@ func TestPingReply(t *testing.T) {
 		f.deliver(echoReply(s.id, s.seq, s.data), s.dst, 54)
 	})
 	p := newPinger(t, f, Options{})
-	r := p.Ping(context.Background(), dstA, time.Second)
+	r := p.Ping(context.Background(), dstA, 0, time.Second)
 	if r.Status != sample.StatusOK || r.TTL != 54 || r.From != dstA {
 		t.Fatalf("result %+v", r)
 	}
@@ -158,7 +159,7 @@ func TestPingTimeoutThenLateReply(t *testing.T) {
 		f.deliver(echoReply(s.id, s.seq, s.data), s.dst, 54)
 	})
 	p := newPinger(t, f, Options{})
-	r := p.Ping(context.Background(), dstA, 30*time.Millisecond)
+	r := p.Ping(context.Background(), dstA, 0, 30*time.Millisecond)
 	if r.Status != sample.StatusTimeout || r.RTT != 0 {
 		t.Fatalf("result %+v", r)
 	}
@@ -175,7 +176,7 @@ func TestDuplicateReplyIgnored(t *testing.T) {
 		f.deliver(b, s.dst, 54)
 	})
 	p := newPinger(t, f, Options{})
-	if r := p.Ping(context.Background(), dstA, time.Second); r.Status != sample.StatusOK {
+	if r := p.Ping(context.Background(), dstA, 0, time.Second); r.Status != sample.StatusOK {
 		t.Fatalf("result %+v", r)
 	}
 	waitFor(t, func() bool { return p.Stats().Unmatched == 1 })
@@ -192,13 +193,55 @@ func TestForeignAndMismatchedRepliesIgnored(t *testing.T) {
 		f.deliver([]byte{0xff}, s.dst, 54)                                           // garbage
 	})
 	p := newPinger(t, f, Options{})
-	r := p.Ping(context.Background(), dstA, 60*time.Millisecond)
+	r := p.Ping(context.Background(), dstA, 0, 60*time.Millisecond)
 	if r.Status != sample.StatusTimeout {
 		t.Fatalf("result %+v", r)
 	}
 	st := p.Stats()
 	if st.Foreign != 3 || st.Unmatched != 1 || st.Replies != 0 {
 		t.Fatalf("stats %+v", st)
+	}
+	if st.ForeignTypes["0"] != 2 || st.ForeignTypes["255"] != 1 {
+		t.Fatalf("foreign types %+v", st.ForeignTypes)
+	}
+}
+
+func TestForeignTypesCountOtherTraffic(t *testing.T) {
+	f := newFake(ModeRaw, func(f *fakeConn, s sent) {
+		req, _ := (&xicmp.Message{Type: ipv4.ICMPTypeEcho, Body: &xicmp.Echo{ID: 1, Seq: 1, Data: []byte("x")}}).Marshal(nil)
+		f.deliver(req, hop, 60)                                                       // someone pinging us
+		f.deliver(dstUnreach(netip.MustParseAddr("127.0.0.1"), 0, 0, 3)[:8], hop, 60) // too short to quote an echo
+		f.deliver(echoReply(s.id, s.seq, s.data), s.dst, 54)
+	})
+	p := newPinger(t, f, Options{})
+	if r := p.Ping(context.Background(), dstA, 0, time.Second); r.Status != sample.StatusOK {
+		t.Fatalf("result %+v", r)
+	}
+	waitFor(t, func() bool { return p.Stats().Foreign == 2 })
+	if ft := p.Stats().ForeignTypes; ft["8"] != 1 || ft["3"] != 1 {
+		t.Fatalf("foreign types %+v", ft)
+	}
+}
+
+func TestTTLLimitedPing(t *testing.T) {
+	hops := []netip.Addr{netip.MustParseAddr("10.234.0.1"), netip.MustParseAddr("10.36.7.234")}
+	f := newFake(ModeRaw, func(f *fakeConn, s sent) {
+		if s.ttl > 0 && s.ttl <= len(hops) {
+			time.Sleep(time.Duration(s.ttl) * 3 * time.Millisecond)
+			f.deliver(timeExceeded(s.dst, s.id, s.seq), hops[s.ttl-1], 64-s.ttl)
+			return
+		}
+		f.deliver(echoReply(s.id, s.seq, s.data), s.dst, 49)
+	})
+	p := newPinger(t, f, Options{})
+	for i, h := range hops {
+		r := p.Ping(context.Background(), dstA, i+1, time.Second)
+		if r.Status != sample.StatusTimeExceeded || r.From != h || r.RTT < time.Duration(i+1)*3*time.Millisecond {
+			t.Fatalf("ttl %d: %+v", i+1, r)
+		}
+	}
+	if r := p.Ping(context.Background(), dstA, 0, time.Second); r.Status != sample.StatusOK || r.From != dstA {
+		t.Fatalf("default ttl: %+v", r)
 	}
 }
 
@@ -207,7 +250,7 @@ func TestDgramModeIgnoresID(t *testing.T) {
 		f.deliver(echoReply(0x7777, s.seq, s.data), s.dst, 60)
 	})
 	p := newPinger(t, f, Options{})
-	if r := p.Ping(context.Background(), dstA, time.Second); r.Status != sample.StatusOK {
+	if r := p.Ping(context.Background(), dstA, 0, time.Second); r.Status != sample.StatusOK {
 		t.Fatalf("result %+v", r)
 	}
 }
@@ -221,11 +264,11 @@ func TestICMPErrors(t *testing.T) {
 		}
 	})
 	p := newPinger(t, f, Options{})
-	r := p.Ping(context.Background(), dstA, time.Second)
+	r := p.Ping(context.Background(), dstA, 0, time.Second)
 	if r.Status != sample.StatusUnreachable || r.From != hop || r.ICMPType != 3 || r.ICMPCode != 1 {
 		t.Fatalf("unreachable result %+v", r)
 	}
-	r = p.Ping(context.Background(), dstB, time.Second)
+	r = p.Ping(context.Background(), dstB, 0, time.Second)
 	if r.Status != sample.StatusTimeExceeded || r.ICMPType != 11 {
 		t.Fatalf("time exceeded result %+v", r)
 	}
@@ -239,7 +282,7 @@ func TestICMPErrorForOtherProcessIgnored(t *testing.T) {
 		f.deliver(dstUnreach(s.dst, s.id^0xffff, s.seq, 1), hop, 63)
 	})
 	p := newPinger(t, f, Options{})
-	if r := p.Ping(context.Background(), dstA, 50*time.Millisecond); r.Status != sample.StatusTimeout {
+	if r := p.Ping(context.Background(), dstA, 0, 50*time.Millisecond); r.Status != sample.StatusTimeout {
 		t.Fatalf("result %+v", r)
 	}
 }
@@ -264,7 +307,7 @@ func TestConcurrentPingsMatchCorrectly(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[i] = p.Ping(context.Background(), d, time.Second)
+			results[i] = p.Ping(context.Background(), d, 0, time.Second)
 		}()
 	}
 	wg.Wait()
@@ -290,7 +333,7 @@ func TestPingCancelled(t *testing.T) {
 		cancel()
 	}()
 	start := time.Now()
-	r := p.Ping(ctx, dstA, 10*time.Second)
+	r := p.Ping(ctx, dstA, 0, 10*time.Second)
 	if r.Err == nil || r.Status != "" || time.Since(start) > time.Second {
 		t.Fatalf("result %+v after %v", r, time.Since(start))
 	}
@@ -303,7 +346,7 @@ func TestSendError(t *testing.T) {
 	f := newFake(ModeRaw, nil)
 	f.writeErr = errors.New("network is unreachable")
 	p := newPinger(t, f, Options{})
-	r := p.Ping(context.Background(), dstA, time.Second)
+	r := p.Ping(context.Background(), dstA, 0, time.Second)
 	if r.Status != sample.StatusError || r.Err == nil {
 		t.Fatalf("result %+v", r)
 	}

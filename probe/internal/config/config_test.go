@@ -13,7 +13,7 @@ func TestDefaultsValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Targets) != 4 || c.Targets[0].Auto != AutoGateway {
+	if len(c.Targets) != 6 || c.Targets[0].TTL != 1 || c.Targets[2].TTL != 3 {
 		t.Fatalf("targets = %+v", c.Targets)
 	}
 	if _, err := Load(filepath.Join(t.TempDir(), "missing.yaml"), false); err == nil {
@@ -59,7 +59,7 @@ output:
 
 func TestParseEmptyUsesDefaults(t *testing.T) {
 	c, err := Parse(nil)
-	if err != nil || len(c.Targets) != 4 {
+	if err != nil || len(c.Targets) != 6 {
 		t.Fatalf("%v %+v", err, c.Targets)
 	}
 }
@@ -82,6 +82,8 @@ func TestParseRejects(t *testing.T) {
 		"no service":    "targets:\n  - {id: a, category: c, ip: 1.1.1.1}\n",
 		"upper id":      "targets:\n  - {id: A, category: c, service: s, ip: 1.1.1.1}\n",
 		"budget":        "scheduler:\n  max_pps: 1\n",
+		"ttl range":     "targets:\n  - {id: a, category: c, service: s, ip: 1.1.1.1, ttl: 40}\n",
+		"ttl auto":      "targets:\n  - {id: a, category: c, service: s, auto: gateway, ttl: 1}\n",
 		"jsonl dir":     "output:\n  jsonl:\n    dir: ''\n",
 		"nice":          "runtime:\n  nice: 25\n",
 	}

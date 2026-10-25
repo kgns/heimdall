@@ -55,15 +55,23 @@ type ICMP struct {
 	PayloadSize int           `yaml:"payload_size"`
 }
 
-// Target is one ICMP destination.
+// Target is one ICMP destination. With TTL set, the echo request is sent
+// towards IP with that IP TTL and the target measured is the router where
+// it expires, which answers with ICMP time exceeded. This reaches routers
+// that ignore echo requests addressed to themselves.
 type Target struct {
 	ID       string        `yaml:"id"`
 	Category string        `yaml:"category"`
 	Service  string        `yaml:"service"`
 	IP       string        `yaml:"ip"`
 	Auto     string        `yaml:"auto"`
+	TTL      int           `yaml:"ttl"`
 	Interval time.Duration `yaml:"interval"`
 }
+
+// MaxTargetTTL bounds TTL-limited targets to the first few hops, which is
+// where per-hop baselines are meaningful.
+const MaxTargetTTL = 16
 
 // Output selects local sinks.
 type Output struct {
@@ -104,10 +112,14 @@ func Default() Config {
 	}
 }
 
-// DefaultTargets is used when the configuration lists no targets.
+// DefaultTargets is used when the configuration lists no targets. The ISP
+// hops are measured with TTL-limited probes because access routers often
+// drop echo requests addressed to themselves.
 func DefaultTargets() []Target {
 	return []Target{
-		{ID: "gateway", Category: "infra", Service: "isp-gateway", Auto: AutoGateway},
+		{ID: "isp-hop1", Category: "infra", Service: "isp-hop", IP: "1.1.1.1", TTL: 1},
+		{ID: "isp-hop2", Category: "infra", Service: "isp-hop", IP: "1.1.1.1", TTL: 2},
+		{ID: "isp-hop3", Category: "infra", Service: "isp-hop", IP: "1.1.1.1", TTL: 3},
 		{ID: "cloudflare-dns", Category: "infra", Service: "cloudflare", IP: "1.1.1.1"},
 		{ID: "google-dns", Category: "infra", Service: "google", IP: "8.8.8.8"},
 		{ID: "quad9-dns", Category: "infra", Service: "quad9", IP: "9.9.9.9"},
@@ -235,6 +247,12 @@ func (c *Config) Validate() error {
 			bad("%s: auto %q: only %q is supported", where, t.Auto, AutoGateway)
 		default:
 			bad("%s: ip or auto is required", where)
+		}
+		if t.TTL < 0 || t.TTL > MaxTargetTTL {
+			bad("%s: ttl %d must be between 1 and %d", where, t.TTL, MaxTargetTTL)
+		}
+		if t.TTL != 0 && t.IP == "" {
+			bad("%s: ttl needs ip, the address the probe is sent towards", where)
 		}
 		if t.Interval != 0 && t.Interval < 100*time.Millisecond {
 			bad("%s: interval %v is below 100ms", where, t.Interval)

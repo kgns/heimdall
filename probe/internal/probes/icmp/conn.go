@@ -29,12 +29,13 @@ const (
 	ModeDgram Mode = "dgram"
 )
 
-// Conn is the socket the pinger uses. ReadFrom returns the ICMP message
+// Conn is the socket the pinger uses. WriteTo sends with IP TTL ttl, or
+// the socket default when ttl is 0. ReadFrom returns the ICMP message
 // without the IP header, the sender, and the received IP TTL (-1 if
 // unknown).
 type Conn interface {
 	Mode() Mode
-	WriteTo(b []byte, dst netip.Addr) error
+	WriteTo(b []byte, dst netip.Addr, ttl int) error
 	ReadFrom(b []byte) (n int, src netip.Addr, ttl int, err error)
 	Close() error
 }
@@ -85,10 +86,19 @@ func listen(mode Mode, network string) (*sockConn, error) {
 
 func (c *sockConn) Mode() Mode { return c.mode }
 
-func (c *sockConn) WriteTo(b []byte, dst netip.Addr) error {
+func (c *sockConn) WriteTo(b []byte, dst netip.Addr, ttl int) error {
 	var addr net.Addr = &net.IPAddr{IP: dst.AsSlice()}
 	if c.mode == ModeDgram {
 		addr = &net.UDPAddr{IP: dst.AsSlice()}
+	}
+	if ttl > 0 {
+		if c.p4 == nil {
+			return errors.New("per-packet TTL is not supported on this socket")
+		}
+		// A per-packet IP_TTL control message keeps one shared socket for
+		// all targets instead of one socket per TTL value.
+		_, err := c.p4.WriteTo(b, &ipv4.ControlMessage{TTL: ttl}, addr)
+		return err
 	}
 	_, err := c.pc.WriteTo(b, addr)
 	return err
