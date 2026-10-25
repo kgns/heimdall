@@ -76,7 +76,7 @@ func TestRunEX7501(t *testing.T) {
 	if !slices.Equal(*queried, wantQueried) {
 		t.Fatalf("queried %v, want %v", *queried, wantQueried)
 	}
-	if r.ICMPMode != "raw" || r.PingGroup == nil || r.PingGroupOK {
+	if r.ICMPMode != "raw" || r.PingGroup == nil || !r.PingGroupOK {
 		t.Fatalf("icmp mode %q ping group %+v ok=%v", r.ICMPMode, r.PingGroup, r.PingGroupOK)
 	}
 	if !containsSubstr(r.Notes, "CGNAT") || !containsSubstr(r.Notes, "excluded from probing") {

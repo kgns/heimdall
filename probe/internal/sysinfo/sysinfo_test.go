@@ -130,12 +130,12 @@ func TestPingGroupRange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pg.Allows(0) || pg.Allows(1) {
-		t.Fatalf("default range %v must allow nobody", pg)
+	if !pg.Allows(0) || !pg.Allows(1000) {
+		t.Fatalf("router range %v must allow all groups", pg)
 	}
-	open, err := ParsePingGroupRange("0\t2147483647\n")
-	if err != nil || !open.Allows(0) || !open.Allows(1000) {
-		t.Fatalf("open range: %v %v", open, err)
+	closed, err := ParsePingGroupRange("1\t0\n")
+	if err != nil || closed.Allows(0) || closed.Allows(1) {
+		t.Fatalf("kernel default range must allow nobody: %v %v", closed, err)
 	}
 	if _, err := ParsePingGroupRange("1"); err == nil {
 		t.Fatal("single value accepted")

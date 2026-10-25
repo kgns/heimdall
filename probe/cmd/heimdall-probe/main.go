@@ -5,11 +5,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/kgns/heimdall/probe/internal/app"
+	"github.com/kgns/heimdall/probe/internal/config"
 	"github.com/kgns/heimdall/probe/internal/selftest"
 )
 
@@ -18,6 +21,8 @@ var version = "dev"
 const usage = `usage: heimdall-probe <command> [flags]
 
 commands:
+  run        start measuring (see run -h)
+  check      validate the configuration and print the effective targets
   selftest   report host facts the probe depends on
   version    print the version
 `
@@ -32,6 +37,10 @@ func main() {
 
 	var err error
 	switch os.Args[1] {
+	case "run":
+		err = runProbe(ctx, os.Args[2:])
+	case "check":
+		err = runCheck(os.Args[2:])
 	case "selftest":
 		err = runSelftest(ctx, os.Args[2:])
 	case "version", "-version", "--version":
@@ -46,6 +55,62 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+func loadConfig(fs *flag.FlagSet, path string) (config.Config, error) {
+	explicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "config" {
+			explicit = true
+		}
+	})
+	return config.Load(path, !explicit)
+}
+
+func runProbe(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	path := fs.String("config", config.DefaultPath, "configuration file; built-in defaults are used if the default path is missing")
+	stdout := fs.Bool("stdout", false, "also print samples to stdout as JSON lines")
+	level := fs.String("log-level", "info", "debug, info, warn or error")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	var lv slog.Level
+	if err := lv.UnmarshalText([]byte(*level)); err != nil {
+		return err
+	}
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lv}))
+
+	cfg, err := loadConfig(fs, *path)
+	if err != nil {
+		return err
+	}
+	if *stdout {
+		cfg.Output.Stdout = true
+	}
+	app.ApplyRuntime(cfg.Runtime, log)
+	return app.Run(ctx, cfg, version, app.LiveHost(), log)
+}
+
+func runCheck(args []string) error {
+	fs := flag.NewFlagSet("check", flag.ContinueOnError)
+	path := fs.String("config", config.DefaultPath, "configuration file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := loadConfig(fs, *path)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("config ok: %d targets, %.1f probes/s (budget %.1f)\n", len(cfg.Targets), cfg.ProbeRate(), cfg.Scheduler.MaxPPS)
+	for _, t := range cfg.Targets {
+		dst := t.IP
+		if t.Auto != "" {
+			dst = "auto:" + t.Auto
+		}
+		fmt.Printf("  %-24s %-10s %-16s %-18s every %v\n", t.ID, t.Category, t.Service, dst, cfg.TargetInterval(t))
+	}
+	return nil
 }
 
 func runSelftest(ctx context.Context, args []string) error {

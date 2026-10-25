@@ -1,0 +1,42 @@
+# heimdall-probe configuration for a CPE. Copy to /misc/heimdall/config.yaml.
+# Every key is optional; omitted keys keep the built-in defaults shown here.
+
+# Device ID used in every sample. Defaults to the lowercased hostname.
+device: ex7501-home
+
+runtime:
+  gomaxprocs: 1          # overridden by the GOMAXPROCS environment variable
+  memory_limit: 48MiB    # Go soft memory limit; overridden by GOMEMLIMIT
+  nice: 10               # lower CPU priority than the router's own daemons
+
+scheduler:
+  max_pps: 60            # hard cap on probes per second across all targets
+  burst: 10
+
+icmp:
+  mode: auto             # auto | raw | dgram
+  interval: 1s
+  timeout: 2s
+  payload_size: 32
+
+# Targets whose route leaves through an interface other than the default
+# route's (for example an operator management VLAN) are never probed.
+targets:
+  - {id: gateway,        category: infra, service: isp-gateway, auto: gateway}
+  - {id: cloudflare-dns, category: infra, service: cloudflare,  ip: 1.1.1.1}
+  - {id: google-dns,     category: infra, service: google,      ip: 8.8.8.8}
+  - {id: quad9-dns,      category: infra, service: quad9,       ip: 9.9.9.9}
+
+output:
+  stdout: false
+  jsonl:                 # local debug copy; keep it on tmpfs, never on flash
+    enabled: true
+    dir: /var/tmp/heimdall
+    max_file_size: 4MiB
+    max_files: 3
+
+self_metrics:
+  interval: 60s
+
+netwatch:
+  interval: 10s          # default route / WAN address re-check
