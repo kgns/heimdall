@@ -1,0 +1,37 @@
+# build output
+/bin/
+/dist/
+
+# terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+terraform/*.tfvars
+!terraform/*.tfvars.example
+
+# local configs that carry tokens or keys
+/configs/local/
+*.secret.yaml
+.env
+.env.*
+
+# python
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+/cloud/build/
+*.zip
+
+# zyee package artifacts
+/zyee/package/data/opt/heimdall/bin/
+/zyee/package/data/opt/heimdall/etc/config.yaml
+/zyee/*.ipk
+
+# editors
+.idea/
+.vscode/
+*.swp
