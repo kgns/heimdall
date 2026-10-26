@@ -21,6 +21,7 @@ import (
 	_ "golang.org/x/crypto/x509roots/fallback"
 
 	"github.com/kgns/heimdall/probe/internal/probes/neterr"
+	"github.com/kgns/heimdall/probe/internal/probes/tlsconf"
 	"github.com/kgns/heimdall/probe/internal/sample"
 )
 
@@ -58,9 +59,11 @@ type Result struct {
 	StatusCode int
 	Proto      string
 	TLSVersion string
-	Bytes      int64
-	Edge       Edge
-	Err        error
+	// KeyExchange is the negotiated group, e.g. X25519MLKEM768.
+	KeyExchange string
+	Bytes       int64
+	Edge        Edge
+	Err         error
 }
 
 // Edge is what the response headers say about the serving CDN node.
@@ -119,7 +122,7 @@ func Probe(ctx context.Context, req Request) Result {
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return dialer.DialContext(ctx, "tcp4", req.Dst.String())
 		},
-		TLSClientConfig:        &tls.Config{ServerName: req.Host, RootCAs: req.RootCAs, MinVersion: tls.VersionTLS12},
+		TLSClientConfig:        tlsconf.Client(req.Host, req.RootCAs),
 		ForceAttemptHTTP2:      true,
 		DisableKeepAlives:      true,
 		DisableCompression:     true,
@@ -160,6 +163,9 @@ func Probe(ctx context.Context, req Request) Result {
 	r.Proto = resp.Proto
 	if resp.TLS != nil {
 		r.TLSVersion = tls.VersionName(resp.TLS.Version)
+		if resp.TLS.CurveID != 0 {
+			r.KeyExchange = resp.TLS.CurveID.String()
+		}
 	}
 	r.Edge = EdgeFromHeaders(resp.Header)
 	if err != nil {

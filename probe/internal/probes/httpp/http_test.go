@@ -50,8 +50,8 @@ func TestProbePhases(t *testing.T) {
 	if r.Edge != (Edge{CDN: "cloudflare", PoP: "IST", Server: "cloudflare", Cache: "HIT"}) {
 		t.Fatalf("edge %+v", r.Edge)
 	}
-	if gotUA != "heimdall-test" || gotHost != "example.com" || r.TLSVersion != "TLS 1.3" {
-		t.Fatalf("ua %q host %q tls %q", gotUA, gotHost, r.TLSVersion)
+	if gotUA != "heimdall-test" || gotHost != "example.com" || r.TLSVersion != "TLS 1.3" || r.KeyExchange != "X25519MLKEM768" {
+		t.Fatalf("ua %q host %q tls %q kex %q", gotUA, gotHost, r.TLSVersion, r.KeyExchange)
 	}
 }
 

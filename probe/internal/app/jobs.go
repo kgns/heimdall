@@ -139,6 +139,9 @@ func httpSample(t *target.Target, dst netip.Addr, r httpp.Result) sample.Sample 
 		x["code"] = r.StatusCode
 		x["proto"] = r.Proto
 		x["tls"] = r.TLSVersion
+		if r.KeyExchange != "" {
+			x["kex"] = r.KeyExchange
+		}
 		x["bytes"] = r.Bytes
 	}
 	for k, v := range map[string]string{"cdn": r.Edge.CDN, "pop": r.Edge.PoP, "server": r.Edge.Server, "cache": r.Edge.Cache} {

@@ -3,7 +3,6 @@ package dnsp
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"io"
@@ -13,6 +12,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+
+	"github.com/kgns/heimdall/probe/internal/probes/tlsconf"
 )
 
 // DoH is an RFC 8484 client that connects to a fixed address, so that no
@@ -39,7 +40,7 @@ func NewDoH(url string, addr netip.AddrPort, roots *x509.CertPool) (*DoH, error)
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return dialer.DialContext(ctx, "tcp4", addr.String())
 		},
-		TLSClientConfig:     &tls.Config{ServerName: req.URL.Hostname(), RootCAs: roots, MinVersion: tls.VersionTLS12},
+		TLSClientConfig:     tlsconf.Client(req.URL.Hostname(), roots),
 		ForceAttemptHTTP2:   true,
 		MaxIdleConns:        1,
 		IdleConnTimeout:     5 * time.Minute,
