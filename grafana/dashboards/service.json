@@ -642,6 +642,85 @@
     },
     {
       "type": "table",
+      "title": "Discovered servers",
+      "description": "The caches, relays, voice regions, beacons and STUN servers the service's own endpoints pointed this line to. Empty for services without discovery.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p95"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "no_answer"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "SELECT target_id, arbitrary(json_extract_scalar(extra, '$.endpoint')) AS endpoint, dst_ip, kind, approx_percentile(rtt_ms, 0.5) FILTER (WHERE status = 'ok') AS p50, approx_percentile(rtt_ms, 0.95) FILTER (WHERE status = 'ok') AS p95, 100.0 * count_if(status <> 'ok') / count(*) AS no_answer, count(*) AS samples FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND service = '$service' AND kind IN ('icmp', 'tcp', 'udp_echo', 'stun') AND json_extract_scalar(extra, '$.endpoint') IS NOT NULL GROUP BY target_id, dst_ip, kind ORDER BY target_id, kind",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 24,
+        "h": 7
+      },
+      "id": 9
+    },
+    {
+      "type": "table",
       "title": "HTTPS edges",
       "description": "Where each destination terminated the HTTPS request, from the response headers.",
       "datasource": {
@@ -701,11 +780,11 @@
       ],
       "gridPos": {
         "x": 0,
-        "y": 36,
+        "y": 43,
         "w": 24,
         "h": 7
       },
-      "id": 9
+      "id": 10
     },
     {
       "type": "table",
@@ -756,11 +835,11 @@
       ],
       "gridPos": {
         "x": 0,
-        "y": 43,
+        "y": 50,
         "w": 12,
         "h": 9
       },
-      "id": 10
+      "id": 11
     },
     {
       "type": "table",
@@ -811,11 +890,11 @@
       ],
       "gridPos": {
         "x": 12,
-        "y": 43,
+        "y": 50,
         "w": 12,
         "h": 9
       },
-      "id": 11
+      "id": 12
     }
   ]
 }

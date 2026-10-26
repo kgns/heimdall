@@ -360,6 +360,28 @@ def overview() -> dict[str, Any]:
             9,
         ),
     ]
+    p.append(
+        L.place(
+            table(
+                "Discovered servers",
+                """
+                SELECT service, arbitrary(json_extract_scalar(extra, '$.endpoint')) AS endpoint, dst_ip, kind,
+                  approx_percentile(rtt_ms, 0.5) FILTER (WHERE status = 'ok') AS p50,
+                  approx_percentile(rtt_ms, 0.95) FILTER (WHERE status = 'ok') AS p95,
+                  100.0 * count_if(status <> 'ok') / count(*) AS no_answer
+                FROM heimdall.samples
+                WHERE {R} AND kind IN ('icmp', 'tcp', 'udp_echo', 'stun')
+                  AND json_extract_scalar(extra, '$.endpoint') IS NOT NULL
+                GROUP BY service, dst_ip, kind ORDER BY service, p50
+                """,
+                "Where the traffic of these services actually goes: the video caches this line is mapped to, "
+                "game relays, voice regions, GameLift beacons and STUN servers.",
+                units={"p50": "ms", "p95": "ms", "no_answer": "percent"},
+            ),
+            24,
+            10,
+        )
+    )
     return dashboard("heimdall-overview", "heimdall / overview", p, [DEVICE])
 
 
@@ -450,6 +472,26 @@ def service() -> dict[str, Any]:
             ),
             12,
             9,
+        ),
+        L.place(
+            table(
+                "Discovered servers",
+                """
+                SELECT target_id, arbitrary(json_extract_scalar(extra, '$.endpoint')) AS endpoint, dst_ip, kind,
+                  approx_percentile(rtt_ms, 0.5) FILTER (WHERE status = 'ok') AS p50,
+                  approx_percentile(rtt_ms, 0.95) FILTER (WHERE status = 'ok') AS p95,
+                  100.0 * count_if(status <> 'ok') / count(*) AS no_answer, count(*) AS samples
+                FROM heimdall.samples
+                WHERE {R} AND service = '$service' AND kind IN ('icmp', 'tcp', 'udp_echo', 'stun')
+                  AND json_extract_scalar(extra, '$.endpoint') IS NOT NULL
+                GROUP BY target_id, dst_ip, kind ORDER BY target_id, kind
+                """,
+                "The caches, relays, voice regions, beacons and STUN servers the service's own endpoints "
+                "pointed this line to. Empty for services without discovery.",
+                units={"p50": "ms", "p95": "ms", "no_answer": "percent"},
+            ),
+            24,
+            7,
         ),
         L.place(
             table(
