@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/kgns/heimdall/probe/internal/config"
+	"github.com/kgns/heimdall/probe/internal/discover"
 )
 
 // Categories are the usage categories a service may belong to.
@@ -30,10 +32,7 @@ var Protocols = []string{"icmp", "tcp", "http"}
 
 // Discoverers name the mechanisms that find the servers a service really
 // uses (video caches, game relays, voice regions), beyond its hostnames.
-var Discoverers = []string{
-	"youtube_cache", "netflix_oca", "discord_voice", "steam_sdr",
-	"gamelift", "stun", "riot",
-}
+var Discoverers = slices.Sorted(maps.Keys(discover.Specs))
 
 // File is one catalog file.
 type File struct {
@@ -50,6 +49,9 @@ type Service struct {
 	Hosts     []string `yaml:"hosts"`
 	IPs       []string `yaml:"ips"`
 	Discovery []string `yaml:"discovery"`
+	// STUN lists host:port STUN servers of the service, for the stun
+	// discoverer.
+	STUN []string `yaml:"stun"`
 	// Protocols defaults to icmp.
 	Protocols    []string      `yaml:"protocols"`
 	ICMPInterval time.Duration `yaml:"icmp_interval"`
@@ -141,6 +143,9 @@ func (s *Service) validate() error {
 			bad("discovery %q is not one of %v", d, Discoverers)
 		}
 	}
+	if slices.Contains(s.Discovery, "stun") != (len(s.STUN) > 0) {
+		bad("stun discovery and the stun server list go together")
+	}
 	for _, p := range s.Protocols {
 		if !slices.Contains(Protocols, p) {
 			bad("protocol %q is not one of %v", p, Protocols)
@@ -204,10 +209,15 @@ func Select(services []Service, only, exclude []string) []Service {
 
 // Targets turns each host and IP of the services into a target with ID
 // "<service>/<host or ip>", measured with the service's protocols. HTTP
-// needs a hostname, so IP entries drop it.
-func Targets(services []Service) []config.Target {
+// needs a hostname, so IP entries drop it. With discovery on, each
+// discoverer of a service adds targets "<service>/<discoverer>/<n>" whose
+// address the discoverer sets at runtime.
+func Targets(services []Service, discovery bool) []config.Target {
 	var out []config.Target
 	for _, s := range services {
+		if discovery {
+			out = append(out, discoveryTargets(s)...)
+		}
 		protos := s.EffectiveProtocols()
 		for _, h := range s.Hosts {
 			out = append(out, config.Target{
@@ -242,9 +252,37 @@ func Apply(cfg *config.Config) ([]Service, error) {
 		return nil, err
 	}
 	services := Select(all, cfg.Catalog.Only, cfg.Catalog.Exclude)
-	cfg.Targets = append(cfg.Targets, Targets(services)...)
+	cfg.Targets = append(cfg.Targets, Targets(services, cfg.Discovery.Enabled)...)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return services, nil
+}
+
+func discoveryTargets(s Service) []config.Target {
+	var out []config.Target
+	for _, d := range s.Discovery {
+		spec := discover.Specs[d]
+		slots := spec.Slots
+		if d == "stun" {
+			slots = min(slots, len(s.STUN))
+		}
+		for n := 1; n <= slots; n++ {
+			t := config.Target{
+				ID: fmt.Sprintf("%s/%s/%d", s.ID, d, n), Category: s.Category, Service: s.ID,
+				Discovery: d, Interval: s.ICMPInterval, Protocols: slices.Clone(spec.Protocols),
+			}
+			if d == "stun" {
+				t.DiscoveryArgs = slices.Clone(s.STUN)
+			}
+			if slices.Contains(spec.Protocols, config.ProtoTCP) {
+				t.Port = spec.Port
+			}
+			if slices.Contains(spec.Protocols, config.ProtoUDP) || slices.Contains(spec.Protocols, config.ProtoSTUN) {
+				t.UDPPort = spec.Port
+			}
+			out = append(out, t)
+		}
+	}
+	return out
 }

@@ -40,8 +40,7 @@ services:
     name: Riot Games TR
     category: gaming
     hosts: [tr1.api.riotgames.com]
-    discovery: [riot]
-    notes: League of Legends TR and Valorant Istanbul game servers come from discovery
+    notes: the TR platform API; game servers are not discoverable
 
   # messaging
   - id: bip

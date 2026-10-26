@@ -14,6 +14,7 @@ import (
 	"github.com/kgns/heimdall/probe/internal/probes/neterr"
 	"github.com/kgns/heimdall/probe/internal/probes/stamp"
 	"github.com/kgns/heimdall/probe/internal/probes/tcpp"
+	"github.com/kgns/heimdall/probe/internal/probes/udpecho"
 	"github.com/kgns/heimdall/probe/internal/sample"
 	"github.com/kgns/heimdall/probe/internal/scheduler"
 	"github.com/kgns/heimdall/probe/internal/target"
@@ -49,6 +50,7 @@ func (e *env) icmpJob(t *target.Target) scheduler.Job {
 				return
 			}
 			s := icmpSample(t, dst, r)
+			withEndpoint(t, &s)
 			if t.TTL > 0 && s.Status == sample.StatusOK {
 				if prev, changed := t.ObserveHop(r.From); changed {
 					e.log.Info("hop changed", "target", t.ID, "ttl", t.TTL, "from", prev, "to", r.From)
@@ -74,13 +76,14 @@ func (e *env) tcpJob(t *target.Target) scheduler.Job {
 			if !ok {
 				return
 			}
-			r := tcpp.Connect(ctx, nil, netip.AddrPortFrom(dst, uint16(t.Port)), c.Timeout)
+			port := endpointPort(t, t.Port)
+			r := tcpp.Connect(ctx, nil, netip.AddrPortFrom(dst, uint16(port)), c.Timeout)
 			if ctx.Err() != nil {
 				return
 			}
 			s := sample.Sample{
 				TS: r.Sent.UnixMilli(), Kind: sample.KindTCP, Category: t.Category, Service: t.Service,
-				TargetID: t.ID, DstIP: dst.String(), DstPort: t.Port, Status: r.Status,
+				TargetID: t.ID, DstIP: dst.String(), DstPort: port, Status: r.Status,
 			}
 			if r.RTT > 0 {
 				s.RTTms = sample.RTT(r.RTT)
@@ -88,6 +91,71 @@ func (e *env) tcpJob(t *target.Target) scheduler.Job {
 			if r.Status != sample.StatusOK {
 				s.Extra = map[string]any{"reason": r.Reason}
 			}
+			withEndpoint(t, &s)
+			e.rec.Emit(s)
+		},
+	}
+}
+
+// withEndpoint adds the discovered server behind t to the sample.
+func withEndpoint(t *target.Target, s *sample.Sample) {
+	ep, ok := t.Endpoint()
+	if !ok || ep.Label == "" {
+		return
+	}
+	if s.Extra == nil {
+		s.Extra = map[string]any{}
+	}
+	s.Extra["endpoint"] = ep.Label
+}
+
+// endpointPort returns the discovered server's port, or def.
+func endpointPort(t *target.Target, def int) int {
+	if ep, ok := t.Endpoint(); ok && ep.Port != 0 {
+		return ep.Port
+	}
+	return def
+}
+
+// udpJob measures a UDP echo service (proto udp) or a STUN server (stun).
+func (e *env) udpJob(t *target.Target, proto string) scheduler.Job {
+	c := e.cfg.UDP
+	return scheduler.Job{
+		Name:        proto + "/" + t.ID,
+		Interval:    c.Interval,
+		Budgeted:    true,
+		MaxInFlight: maxInFlight(c.Timeout, c.Interval),
+		Run: func(ctx context.Context) {
+			dst, ok := t.Dst()
+			if !ok {
+				return
+			}
+			port := endpointPort(t, t.UDPPort)
+			ap := netip.AddrPortFrom(dst, uint16(port))
+			var r udpecho.Result
+			kind := sample.KindUDPEcho
+			if proto == config.ProtoSTUN {
+				r, kind = udpecho.STUN(ctx, ap, c.Timeout), sample.KindSTUN
+			} else {
+				r = udpecho.Echo(ctx, ap, c.Timeout)
+			}
+			if r.Status == "" {
+				return
+			}
+			s := sample.Sample{
+				TS: r.Sent.UnixMilli(), Kind: kind, Category: t.Category, Service: t.Service,
+				TargetID: t.ID, DstIP: dst.String(), DstPort: port, Status: r.Status,
+				Extra: map[string]any{"proto": proto},
+			}
+			if r.Status == sample.StatusOK {
+				s.RTTms = sample.RTT(r.RTT)
+				if r.Mapped.IsValid() {
+					s.Extra["mapped"] = r.Mapped.String()
+				}
+			} else {
+				s.Extra["reason"] = r.Reason
+			}
+			withEndpoint(t, &s)
 			e.rec.Emit(s)
 		},
 	}

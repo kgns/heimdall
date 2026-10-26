@@ -38,6 +38,25 @@ stamp:
   timeout: 2s
   port: 862
 
+# udp (datagram echo, for example the GameLift ping beacons) and stun (STUN
+# Binding requests, which also report the CGNAT public mapping) probes.
+udp:
+  interval: 5s
+  timeout: 2s
+
+# Discoverers named in the catalog find the servers a service really uses:
+# the YouTube and Netflix caches this line is mapped to, the nearest Steam
+# relays (by distance from lat/lon), Discord voice regions, GameLift ping
+# beacons and the services' STUN servers. Each fills targets
+# "<service>/<discoverer>/<n>" and re-runs every interval.
+discovery:
+  enabled: true
+  interval: 1h
+  timeout: 20s
+  lat: 41.01
+  lon: 28.98
+  gamelift_regions: [eu-central-1, eu-south-1, il-central-1, eu-west-1]
+
 # Layered DNS probes. The local and upstream layers are discovered from the
 # running dnsmasq (or resolv.conf without it). uncached_zone is a wildcard
 # zone: a random label under it is resolved through the full path on every

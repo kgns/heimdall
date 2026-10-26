@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,6 +33,8 @@ type Config struct {
 	TCP         TCP         `yaml:"tcp"`
 	HTTP        HTTP        `yaml:"http"`
 	STAMP       STAMP       `yaml:"stamp"`
+	UDP         UDP         `yaml:"udp"`
+	Discovery   Discovery   `yaml:"discovery"`
 	DNS         DNS         `yaml:"dns"`
 	Targets     []Target    `yaml:"targets"`
 	Catalog     Catalog     `yaml:"catalog"`
@@ -150,16 +153,29 @@ type Target struct {
 	Port int `yaml:"port"`
 	// Path is the HTTP request path, defaulting to "/".
 	Path string `yaml:"path"`
+	// UDPPort is the port of udp and stun probes.
+	UDPPort int `yaml:"udp_port"`
+	// Discovery names the discoverer that sets the address of a target
+	// created from the catalog; such targets have no ip, host or auto.
+	// DiscoveryArgs are the service's inputs to it (STUN servers).
+	Discovery     string   `yaml:"-"`
+	DiscoveryArgs []string `yaml:"-"`
 }
 
 // Protocol names. stamp needs a STAMP reflector (heimdall-reflector) at
 // the target's address.
+// udp sends a datagram to an echo service and waits for it to return; stun
+// sends a STUN Binding request. Both use the target's udp_port.
 const (
 	ProtoICMP  = "icmp"
 	ProtoTCP   = "tcp"
 	ProtoHTTP  = "http"
 	ProtoSTAMP = "stamp"
+	ProtoUDP   = "udp"
+	ProtoSTUN  = "stun"
 )
+
+var protocols = []string{ProtoICMP, ProtoTCP, ProtoHTTP, ProtoSTAMP, ProtoUDP, ProtoSTUN}
 
 // Wants reports whether t is measured with protocol p.
 func (t Target) Wants(p string) bool {
@@ -187,6 +203,23 @@ type STAMP struct {
 	Interval time.Duration `yaml:"interval"`
 	Timeout  time.Duration `yaml:"timeout"`
 	Port     int           `yaml:"port"`
+}
+
+// UDP configures the udp echo and stun probes.
+type UDP struct {
+	Interval time.Duration `yaml:"interval"`
+	Timeout  time.Duration `yaml:"timeout"`
+}
+
+// Discovery configures the discoverers named in the catalog. Lat and Lon
+// place the probe for choosing nearby relays.
+type Discovery struct {
+	Enabled         bool          `yaml:"enabled"`
+	Interval        time.Duration `yaml:"interval"`
+	Timeout         time.Duration `yaml:"timeout"`
+	Lat             float64       `yaml:"lat"`
+	Lon             float64       `yaml:"lon"`
+	GameLiftRegions []string      `yaml:"gamelift_regions"`
 }
 
 // HTTP configures HTTPS request probes.
@@ -290,6 +323,13 @@ func Default() Config {
 		TCP:       TCP{Interval: 10 * time.Second, Timeout: 3 * time.Second, Port: 443},
 		HTTP:      HTTP{Interval: time.Minute, Timeout: 10 * time.Second, MaxBody: 32 * KiB},
 		STAMP:     STAMP{Interval: time.Second, Timeout: 2 * time.Second, Port: 862},
+		UDP:       UDP{Interval: 5 * time.Second, Timeout: 2 * time.Second},
+		Discovery: Discovery{
+			Enabled: true, Interval: time.Hour, Timeout: 20 * time.Second,
+			// Istanbul.
+			Lat: 41.01, Lon: 28.98,
+			GameLiftRegions: []string{"eu-central-1", "eu-south-1", "il-central-1", "eu-west-1"},
+		},
 		DNS: DNS{
 			Enabled: true, Interval: 30 * time.Second, Timeout: 3 * time.Second,
 			Names: []string{"www.google.com", "www.wikipedia.org"},
@@ -407,6 +447,9 @@ func (c *Config) ProbeRate() float64 {
 		}
 		if t.Wants(ProtoSTAMP) && c.STAMP.Interval > 0 {
 			r += 1 / c.STAMP.Interval.Seconds()
+		}
+		if (t.Wants(ProtoUDP) || t.Wants(ProtoSTUN)) && c.UDP.Interval > 0 {
+			r += 1 / c.UDP.Interval.Seconds()
 		}
 	}
 	if d := c.DNS; d.Enabled && d.Interval > 0 {
@@ -536,6 +579,7 @@ func (c *Config) Validate() error {
 		case t.Auto == AutoGateway:
 		case t.Auto != "":
 			bad("%s: auto %q: only %q is supported", where, t.Auto, AutoGateway)
+		case t.Discovery != "":
 		default:
 			bad("%s: one of ip, host or auto is required", where)
 		}
@@ -546,11 +590,15 @@ func (c *Config) Validate() error {
 			bad("%s: ttl needs ip, the address the probe is sent towards", where)
 		}
 		for _, p := range t.Protocols {
-			if p != ProtoICMP && p != ProtoTCP && p != ProtoHTTP && p != ProtoSTAMP {
-				bad("%s: protocol %q is not icmp, tcp, http or stamp", where, p)
+			if !slices.Contains(protocols, p) {
+				bad("%s: protocol %q is not one of %v", where, p, protocols)
 			}
 		}
-		if (t.TTL != 0 || t.Auto != "") && (t.Wants(ProtoTCP) || t.Wants(ProtoHTTP) || t.Wants(ProtoSTAMP)) {
+		if (t.Wants(ProtoUDP) || t.Wants(ProtoSTUN)) && (t.UDPPort < 1 || t.UDPPort > 65535) {
+			bad("%s: udp and stun need udp_port", where)
+		}
+		if (t.TTL != 0 || t.Auto != "") && (t.Wants(ProtoTCP) || t.Wants(ProtoHTTP) || t.Wants(ProtoSTAMP) ||
+			t.Wants(ProtoUDP) || t.Wants(ProtoSTUN)) {
 			bad("%s: ttl and auto targets support only icmp", where)
 		}
 		if t.Wants(ProtoHTTP) && t.Host == "" {
@@ -630,6 +678,28 @@ func (c *Config) validateProbes(bad func(string, ...any)) {
 	}
 	if c.STAMP.Port < 1 || c.STAMP.Port > 65535 {
 		bad("stamp.port %d out of range", c.STAMP.Port)
+	}
+	if c.UDP.Interval < time.Second {
+		bad("udp.interval must be at least 1s")
+	}
+	if c.UDP.Timeout <= 0 || c.UDP.Timeout > 30*time.Second {
+		bad("udp.timeout must be in (0, 30s]")
+	}
+	if d := c.Discovery; d.Enabled {
+		if d.Interval < 5*time.Minute {
+			bad("discovery.interval must be at least 5m")
+		}
+		if d.Timeout <= 0 || d.Timeout > time.Minute {
+			bad("discovery.timeout must be in (0, 1m]")
+		}
+		if d.Lat < -90 || d.Lat > 90 || d.Lon < -180 || d.Lon > 180 {
+			bad("discovery.lat/lon out of range")
+		}
+		for _, r := range d.GameLiftRegions {
+			if !idPattern.MatchString(r) {
+				bad("discovery.gamelift_regions: %q is not a region name", r)
+			}
+		}
 	}
 
 	d := c.DNS

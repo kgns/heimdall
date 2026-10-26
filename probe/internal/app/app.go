@@ -103,6 +103,7 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 	defer pinger.Close()
 
 	targets := make([]*target.Target, 0, len(cfg.Targets))
+	discoveryArgs := map[string][]string{}
 	// protocols[i] is the configuration of targets[i].
 	protocols := make([]config.Target, 0, len(cfg.Targets))
 	for _, tc := range cfg.Targets {
@@ -117,6 +118,11 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		t.Interval = cfg.TargetInterval(tc)
 		t.Port = cfg.TargetPort(tc)
 		t.Path = tc.Path
+		t.UDPPort = tc.UDPPort
+		t.Discovery = tc.Discovery
+		if tc.Discovery != "" {
+			discoveryArgs[t.ID] = tc.DiscoveryArgs
+		}
 		if t.TTL > 0 && pinger.Mode() != icmp.ModeRaw {
 			// Datagram ICMP sockets do not deliver time exceeded errors.
 			log.Warn("TTL-limited target needs a raw ICMP socket; skipping", "target", t.ID, "icmp_mode", pinger.Mode())
@@ -214,6 +220,19 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		if tc.Wants(config.ProtoSTAMP) {
 			sched.Add(e.stampJob(t, stampers))
 			jobCounts[config.ProtoSTAMP]++
+		}
+		for _, p := range []string{config.ProtoUDP, config.ProtoSTUN} {
+			if tc.Wants(p) {
+				sched.Add(e.udpJob(t, p))
+				jobCounts[p]++
+			}
+		}
+	}
+	if cfg.Discovery.Enabled {
+		disc := newDiscovery(e, targets, h.Lookup, nw.Allowed, discoveryArgs)
+		for _, j := range disc.jobs() {
+			sched.Add(j)
+			jobCounts["discovery"]++
 		}
 	}
 	for _, j := range dnsProbes.jobs() {

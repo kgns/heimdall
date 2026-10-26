@@ -100,7 +100,7 @@ services:
 	if len(sel) != 5 {
 		t.Fatalf("disabled service kept: %d", len(sel))
 	}
-	targets := Targets(sel)
+	targets := Targets(sel, true)
 	ids := []string{}
 	for _, tg := range targets {
 		ids = append(ids, tg.ID+"="+strings.Join(tg.Protocols, "+"))
@@ -158,5 +158,52 @@ func TestApplyBudgetAndClashes(t *testing.T) {
 	cfg = config.Default()
 	if s, err := Apply(&cfg); err != nil || s != nil {
 		t.Fatalf("no catalog: %v %v", s, err)
+	}
+}
+
+func TestDiscoveryTargets(t *testing.T) {
+	f, err := Parse([]byte(`version: 1
+services:
+  - {id: netflix, name: Netflix, category: streaming, hosts: [www.netflix.com], discovery: [netflix_oca]}
+  - {id: meet, name: Meet, category: video_calls, discovery: [stun], stun: ["stun.l.google.com:19302"]}
+  - {id: gl, name: GameLift, category: gaming, discovery: [gamelift]}
+`), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	byID := map[string]config.Target{}
+	for _, tg := range Targets(f.Services, true) {
+		ids = append(ids, tg.ID)
+		byID[tg.ID] = tg
+	}
+	want := "netflix/netflix_oca/1 netflix/netflix_oca/2 netflix/netflix_oca/3 netflix/www.netflix.com " +
+		"meet/stun/1 gl/gamelift/1 gl/gamelift/2 gl/gamelift/3 gl/gamelift/4"
+	if strings.Join(ids, " ") != want {
+		t.Fatalf("targets %v", ids)
+	}
+	if tg := byID["netflix/netflix_oca/2"]; tg.Discovery != "netflix_oca" || tg.Port != 443 || !tg.Wants("tcp") {
+		t.Fatalf("%+v", tg)
+	}
+	if tg := byID["gl/gamelift/1"]; tg.UDPPort != 7770 || !tg.Wants("udp") || tg.Wants("icmp") {
+		t.Fatalf("%+v", tg)
+	}
+	if got := Targets(f.Services, false); len(got) != 1 {
+		t.Fatalf("discovery off kept %d targets", len(got))
+	}
+	cfg := config.Default()
+	cfg.Targets = Targets(f.Services, true)
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, bad := range []string{
+		"  - {id: x, name: X, category: voice, discovery: [stun]}\n",
+		"  - {id: x, name: X, category: voice, discovery: [riot]}\n",
+		"  - {id: x, name: X, category: voice, hosts: [a.example.com], stun: [\"a.example.com:3478\"]}\n",
+	} {
+		if _, err := Parse([]byte("version: 1\nservices:\n"+bad), "bad"); err == nil {
+			t.Fatalf("accepted %q", bad)
+		}
 	}
 }

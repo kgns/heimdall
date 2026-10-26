@@ -59,6 +59,8 @@ func runCheck(ctx context.Context, args []string) error {
 			dst = "auto:" + t.Auto
 		case t.Host != "":
 			dst = t.Host
+		case t.Discovery != "":
+			dst = "discovery:" + t.Discovery
 		}
 		resolved := ""
 		if r, ok := lookups[t.ID]; ok {
@@ -96,7 +98,7 @@ func printPending(services []catalog.Service) {
 	}
 	if len(pending) > 0 {
 		sort.Strings(pending)
-		fmt.Printf("discovery not run by this version yet: %s\n", strings.Join(pending, "; "))
+		fmt.Printf("discovered at runtime: %s\n", strings.Join(pending, "; "))
 	}
 }
 

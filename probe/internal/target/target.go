@@ -24,13 +24,39 @@ type Target struct {
 	TTL int
 	// Interval is the ICMP probe interval.
 	Interval time.Duration
-	// Port and Path are used by the TCP and HTTP probes.
-	Port int
-	Path string
+	// Port and Path are used by the TCP and HTTP probes, UDPPort by the
+	// udp echo and stun probes.
+	Port    int
+	Path    string
+	UDPPort int
+	// Discovery names the discoverer that sets the address, if any.
+	Discovery string
 
-	dst     atomic.Pointer[netip.Addr]
-	blocked atomic.Bool
-	hop     atomic.Pointer[netip.Addr]
+	dst      atomic.Pointer[netip.Addr]
+	blocked  atomic.Bool
+	hop      atomic.Pointer[netip.Addr]
+	endpoint atomic.Pointer[Endpoint]
+}
+
+// Endpoint describes a discovered server behind a target.
+type Endpoint struct {
+	Label string
+	// Port overrides the target's TCP or UDP port when non-zero.
+	Port int
+}
+
+// SetEndpoint records the discovered server the target now measures.
+func (t *Target) SetEndpoint(e Endpoint) { t.endpoint.Store(&e) }
+
+// ClearEndpoint forgets the discovered server.
+func (t *Target) ClearEndpoint() { t.endpoint.Store(nil) }
+
+// Endpoint returns the discovered server, if any.
+func (t *Target) Endpoint() (Endpoint, bool) {
+	if p := t.endpoint.Load(); p != nil {
+		return *p, true
+	}
+	return Endpoint{}, false
 }
 
 // ObserveHop records the router that answered a TTL-limited probe and
