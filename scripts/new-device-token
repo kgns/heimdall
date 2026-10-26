@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Create or rotate the upload token of a device. The token is written to
+# configs/local/<device>.token (gitignored, mode 0600); only its SHA-256
+# digest is stored, as SSM SecureString /heimdall/devices/<device>/token_sha256.
+set -euo pipefail
+
+device="${1:?usage: $0 <device-id>}"
+[[ "$device" =~ ^[a-z0-9][a-z0-9_.-]{0,63}$ ]] || { echo "invalid device id" >&2; exit 2; }
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PROFILE="${AWS_PROFILE_HEIMDALL:-kgns}"
+REGION="${AWS_REGION_HEIMDALL:-eu-central-1}"
+out="$ROOT/configs/local/$device.token"
+
+umask 077
+mkdir -p "$(dirname "$out")"
+token="$(head -c 32 /dev/urandom | base64 | tr -d '=+/\n' | cut -c1-40)"
+digest="$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)"
+
+name="/heimdall/devices/$device/token_sha256"
+# put-parameter rejects --tags together with --overwrite, so tags are
+# applied in a second call.
+aws ssm put-parameter --profile "$PROFILE" --region "$REGION" \
+	--name "$name" --type SecureString --overwrite --value "$digest" >/dev/null
+aws ssm add-tags-to-resource --profile "$PROFILE" --region "$REGION" \
+	--resource-type Parameter --resource-id "$name" --tags Key=project,Value=heimdall
+
+printf '%s\n' "$token" > "$out"
+echo "token for $device written to $out; digest stored in SSM"

@@ -11,6 +11,7 @@ crash.log
 crash.*.log
 terraform/*.tfvars
 !terraform/*.tfvars.example
+/terraform/build/
 
 # local configs that carry tokens or keys
 /configs/local/
