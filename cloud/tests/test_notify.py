@@ -112,3 +112,30 @@ def test_incident_events_filter():
     ]
     [got] = incident_events(samples)
     assert got["extra"]["incident_id"] == "a"
+
+
+def test_access_incident_gets_ioda_note(aws):
+    table, ssm = aws
+    ssm.put_parameter(Name=WEBHOOK, Type="SecureString", Value="https://hooks.slack.com/services/T/B/x")
+    posts, asked = [], []
+    n = notifier(table, ssm, posts)
+    n.device_asn = {"ex7501-home": 34984}
+    n.access_note = lambda asn, now: asked.append(asn) or f"IODA: no outage signal for AS{asn}"
+    n({"device": "ex7501-home", "events": [ev("incident_start", scope="access", cause="access_network")]})
+    assert asked == [34984] and "IODA: no outage signal for AS34984" in posts[-1][1]
+    n({"device": "ex7501-home", "events": [ev("incident_start", incident_id="s1")]})
+    assert asked == [34984]
+
+
+def test_ioda_note():
+    from heimdall_cloud.notify import ioda_note
+
+    assert "no outage" in ioda_note(34984, 1_793_020_000, fetch=lambda url: {"data": []})
+    hit = {"data": [{"start": 1_793_019_000, "duration": 600, "datasource": "bgp", "score": 812.4}]}
+    assert ioda_note(34984, 1_793_020_000, fetch=lambda url: hit) == "IODA: outage signal for AS34984 (bgp, score 812)"
+
+    def down(url):
+        raise TimeoutError("timed out")
+
+    # A failing fetch inside ioda_events is logged and treated as no events.
+    assert "no outage" in ioda_note(34984, 1_793_020_000, fetch=down)

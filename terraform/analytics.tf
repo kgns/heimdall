@@ -25,6 +25,20 @@ locals {
       description = "Origin AS of router addresses seen in traceroutes (RIPEstat)"
       columns     = [["ip", "string"], ["asn", "bigint"], ["prefix", "string"], ["as_name", "string"]]
     }
+    atlas_ping = {
+      description = "RIPE Atlas built-in root server pings from other probes in each CPE's ISP, per probe and UTC hour"
+      columns = [
+        ["probe_id", "bigint"], ["asn", "bigint"], ["target", "string"], ["msm_id", "bigint"], ["hour", "int"],
+        ["p50", "double"], ["min", "double"], ["results", "bigint"], ["loss_pct", "double"],
+      ]
+    }
+    external_events = {
+      description = "Outage events from public sources (IODA) for each CPE's ISP and country"
+      columns = [
+        ["source", "string"], ["entity", "string"], ["start_s", "bigint"], ["end_s", "bigint"],
+        ["datasource", "string"], ["method", "string"], ["score", "double"],
+      ]
+    }
     path_borders = {
       description = "Per device and target: where the day's most frequent path leaves the device's own network"
       columns = [
@@ -158,6 +172,7 @@ resource "aws_lambda_function" "analytics" {
       BUCKET         = aws_s3_bucket.raw.bucket
       CONTROL_DEVICE = local.cloud_device
       HOME_ASN       = jsonencode(local.home_asn)
+      COUNTRY        = "TR"
     }
   }
 

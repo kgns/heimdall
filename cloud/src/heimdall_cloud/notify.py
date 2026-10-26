@@ -88,7 +88,24 @@ def _fmt_duration(s: int) -> str:
     return f"{s / 3600:.1f}h"
 
 
-def format_message(device: str, ev: dict[str, Any], control: list[dict[str, Any]] | None, grafana: str) -> str:
+def ioda_note(asn: int, now_s: int, fetch: Callable[[str], Any] | None = None) -> str:
+    """One line on whether IODA sees an outage of the ISP right now."""
+    from heimdall_cloud import external
+
+    kw = {"fetch": fetch} if fetch else {}
+    try:
+        events = external.ioda_events(now_s - 3 * 3600, now_s, [("asn", str(asn))], **kw)
+    except Exception as e:
+        return f"IODA: not reachable ({e})"
+    if not events:
+        return f"IODA: no outage signal for AS{asn} in the last 3 hours"
+    worst = max(events, key=lambda e: e.get("score") or 0)
+    return f"IODA: outage signal for AS{asn} ({worst.get('datasource')}, score {worst.get('score'):.0f})"
+
+
+def format_message(
+    device: str, ev: dict[str, Any], control: list[dict[str, Any]] | None, grafana: str, note: str | None = None
+) -> str:
     x = ev["extra"]
     name = x["event"]
     services = ", ".join(x.get("services") or []) or "-"
@@ -111,6 +128,8 @@ def format_message(device: str, ev: dict[str, Any], control: list[dict[str, Any]
             lines.append("AWS control: also degraded from eu-central-1, so probably the service itself")
         else:
             lines.append("AWS control: normal from eu-central-1, so probably the ISP's path to the service")
+    if note:
+        lines.append(note)
     if grafana:
         lines.append(f"{grafana}d/heimdall-overview")
     return "\n".join(lines)
@@ -125,9 +144,12 @@ class Notifier:
         grafana_url: str = "",
         post: Callable[[str, str], None] = post_slack,
         now: Callable[[], float] = time.time,
+        device_asn: dict[str, int] | None = None,
+        access_note: Callable[[int, int], str] = ioda_note,
     ):
         self.table, self.webhook, self.control = table, webhook, control_device
         self.grafana, self.post, self.now = grafana_url, post, now
+        self.device_asn, self.access_note = device_asn or {}, access_note
 
     def open_services(self, device: str) -> set[str]:
         from boto3.dynamodb.conditions import Attr, Key
@@ -186,10 +208,13 @@ class Notifier:
             if device == self.control:
                 continue
             control = None
+            note = None
             if x["event"] != "incident_end" and x.get("scope") == "service":
                 control = sorted(self.open_services(self.control) & set(x.get("services") or []))
-            text = format_message(device, ev, control, self.grafana)
             url = self.webhook.url()
+            if url and x["event"] == "incident_start" and x.get("scope") == "access" and device in self.device_asn:
+                note = self.access_note(self.device_asn[device], int(self.now()))
+            text = format_message(device, ev, control, self.grafana, note)
             log.info(
                 json.dumps({"device": device, "event": x["event"], "id": x.get("incident_id"), "slack": bool(url)})
             )
@@ -216,5 +241,6 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             webhook=Webhook(boto3.client("ssm"), os.environ["WEBHOOK_PARAMETER"]),
             control_device=os.environ["CONTROL_DEVICE"],
             grafana_url=os.environ.get("GRAFANA_URL", ""),
+            device_asn=json.loads(os.environ.get("DEVICE_ASN", "{}")),
         )
     return _notifier(event, context)

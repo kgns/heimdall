@@ -32,6 +32,7 @@ import ipaddress
 import json
 import logging
 import os
+import statistics
 import time
 import urllib.parse
 import urllib.request
@@ -41,6 +42,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from heimdall_cloud import external
 from heimdall_cloud.schema import DEVICE_RE
 
 log = logging.getLogger()
@@ -441,8 +443,58 @@ class Store:
         return [json.loads(line) for line in gzip.decompress(obj["Body"].read()).decode().splitlines() if line]
 
 
+def external_context(
+    device: str,
+    services: list[dict[str, Any]],
+    atlas: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    asn: int | None,
+) -> dict[str, Any]:
+    """The CPE's root-server latency next to the other Atlas probes in its
+    ISP, and the outage events IODA saw for the ISP and the country."""
+
+    def inflation(rows: list[dict[str, Any]]) -> float | None:
+        def hours(hs: tuple[int, ...]) -> list[float]:
+            return [r["p50"] for r in rows if r["p50"] and (r["hour"] + LOCAL_OFFSET_H) % 24 in hs]
+
+        busy, night = hours(BUSY_HOURS), hours(NIGHT_HOURS)
+        if not busy or not night:
+            return None
+        return round(statistics.median(busy) / statistics.median(night), 3)
+
+    out: dict[str, Any] = {
+        "atlas_asn": asn,
+        "ioda_events": [e for e in events if e["entity"] == f"asn/{asn}" or e["entity"].startswith("country/")],
+    }
+    for target in external.ATLAS_PINGS:
+        mine = next(
+            (s for s in services if s["device"] == device and s["service"] == target and s["kind"] == "icmp"), None
+        )
+        peers = [r for r in atlas if r["target"] == target and r["asn"] == asn]
+        by_probe: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for r in peers:
+            by_probe[r["probe_id"]].append(r)
+        p50s = [r["p50"] for r in peers if r["p50"]]
+        infl = [i for i in (inflation(rs) for rs in by_probe.values()) if i]
+        out[target] = {
+            "cpe_p50": mine["p50"] if mine else None,
+            "cpe_busy_inflation": mine["busy_inflation"] if mine else None,
+            "peer_probes": len(by_probe),
+            "peer_p50": round(statistics.median(p50s), 3) if p50s else None,
+            "peer_busy_inflation": round(statistics.median(infl), 3) if infl else None,
+        }
+    return out
+
+
 def run(
-    day: date, athena: Athena, store: Store, ripe: RIPEstat, control: str, home_asn: dict[str, int]
+    day: date,
+    athena: Athena,
+    store: Store,
+    ripe: RIPEstat,
+    control: str,
+    home_asn: dict[str, int],
+    country: str = "TR",
+    fetch: external.Fetch = external.http_json,
 ) -> dict[str, Any]:
     if not DEVICE_RE.match(control):
         raise ValueError(f"invalid control device {control!r}")
@@ -460,7 +512,16 @@ def run(
     borders = path_borders(athena, day, asn_of, home_asn)
     store.put_rows("path_borders", day, borders)
     incs = incidents(athena, day)
+
+    cpe_asns = sorted({a for d, a in home_asn.items() if d != control})
+    atlas = [r for a in cpe_asns for r in external.atlas_ping(day, a, fetch)]
+    store.put_rows("atlas_ping", day, atlas)
+    events = external.ioda_day(day, [("asn", str(a)) for a in cpe_asns] + [("country", country)], fetch)
+    store.put_rows("external_events", day, events)
+
     summary = summarize(day, services, compare, borders, incs, names, control)
+    for dev, s in summary["devices"].items():
+        s["external"] = external_context(dev, services, atlas, events, home_asn.get(dev))
     store.put_doc("summary", day, summary)
     counts = {
         "daily_service": len(services),
@@ -468,6 +529,8 @@ def run(
         "ip_asn": len(asn_rows),
         "path_borders": len(borders),
         "incidents": len(incs),
+        "atlas_ping": len(atlas),
+        "external_events": len(events),
     }
     log.info(json.dumps({"day": day.isoformat(), **counts}))
     return {"day": day.isoformat(), **counts}
@@ -484,4 +547,5 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         RIPEstat(),
         control=os.environ["CONTROL_DEVICE"],
         home_asn=json.loads(os.environ.get("HOME_ASN", "{}")),
+        country=os.environ.get("COUNTRY", "TR"),
     )

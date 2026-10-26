@@ -182,3 +182,36 @@ def test_store_round_trip():
         body = s3.get_object(Bucket="heimdall-test", Key=k)["Body"].read()
         assert gzip.decompress(body).decode().endswith("\n")
         assert st.put_doc("summary", DAY, {"x": 1}) == "derived/summary/dt=2026-10-26/summary.json"
+
+
+def test_atlas_ping_and_context():
+    def fetch(url):
+        if "/probes/" in url:
+            return {"results": [{"id": 1}, {"id": 2}], "next": None}
+        if "/measurements/1001/" in url:
+            out = []
+            # Probe 1: 10 ms at night (00 UTC = 03 local), 15 ms in the
+            # evening (18 UTC = 21 local); probe 2 flat at 20 ms.
+            for hour, rtt1, rtt2 in ((0, 10.0, 20.0), (18, 15.0, 20.0)):
+                ts = 1_792_972_800 + hour * 3600
+                out.append({"prb_id": 1, "timestamp": ts, "min": rtt1, "sent": 3, "rcvd": 3})
+                out.append({"prb_id": 2, "timestamp": ts, "min": rtt2, "sent": 3, "rcvd": 2})
+            return out
+        return []
+
+    from heimdall_cloud import external
+
+    rows = external.atlas_ping(DAY, 34984, fetch)
+    k = [r for r in rows if r["target"] == "k-root"]
+    assert len(k) == 4 and {r["probe_id"] for r in k} == {1, 2}
+    assert next(r for r in k if r["probe_id"] == 2)["loss_pct"] == 100 / 3
+    services = [{"device": "home", "service": "k-root", "kind": "icmp", "p50": 12.0, "busy_inflation": 1.4}]
+    ctx = analytics.external_context("home", services, rows, [{"entity": "asn/34984", "start_s": 1}], 34984)
+    assert ctx["k-root"] == {
+        "cpe_p50": 12.0,
+        "cpe_busy_inflation": 1.4,
+        "peer_probes": 2,
+        "peer_p50": 17.5,
+        "peer_busy_inflation": 1.25,
+    }
+    assert ctx["f-root"]["peer_probes"] == 0 and len(ctx["ioda_events"]) == 1

@@ -346,6 +346,115 @@
         "h": 10
       },
       "id": 4
+    },
+    {
+      "type": "timeseries",
+      "title": "k.root RTT: this line and other lines of the ISP (RIPE Atlas)",
+      "description": "Hourly median to k.root-servers.net from the other RIPE Atlas probes in the same ISP, next to this CPE. All lines rising together means an ISP-wide issue; this line alone, a local one. Atlas rows come from the daily analysis, so the current day is missing.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0,
+          "displayName": "${__field.labels.metric}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "SELECT date_add('hour', hour, CAST(date_parse(dt, '%Y-%m-%d') AS timestamp)) AS time, 'atlas probe ' || CAST(probe_id AS varchar) AS metric, p50 AS value FROM heimdall.atlas_ping WHERE dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND target = 'k-root' UNION ALL SELECT date_trunc('hour', CAST(from_unixtime(ts_ms / 1000.0) AS timestamp)) AS time, '$device' AS metric, approx_percentile(rtt_ms, 0.5) AS value FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'icmp' AND status = 'ok' AND service = 'k-root' GROUP BY 1, 2 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 10
+      },
+      "id": 5
+    },
+    {
+      "type": "table",
+      "title": "Outage events from IODA",
+      "description": "Outages IODA (Georgia Tech) detected for the ISP's AS and the country, from active probing, BGP and darknet traffic.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "SELECT entity, datasource, method, score, CAST(from_unixtime(start_s) AS timestamp) AS start_time, CAST(from_unixtime(end_s) AS timestamp) AS end_time FROM heimdall.external_events WHERE dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') ORDER BY start_s DESC",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 24,
+        "h": 6
+      },
+      "id": 6
     }
   ]
 }

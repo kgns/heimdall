@@ -116,6 +116,11 @@ targets:
   - {id: cloudflare-dns, category: infra, service: cloudflare,  ip: 1.1.1.1}
   - {id: google-dns,     category: infra, service: google,      ip: 8.8.8.8}
   - {id: quad9-dns,      category: infra, service: quad9,       ip: 9.9.9.9}
+  # Root servers that every RIPE Atlas probe pings (built-in measurements
+  # 1001 and 1004), so this line can be compared with other lines of the
+  # same ISP.
+  - {id: k-root,         category: infra, service: k-root,      ip: 193.0.14.129}
+  - {id: f-root,         category: infra, service: f-root,      ip: 192.5.5.241}
   # heimdall-reflector in AWS eu-central-1 (terraform/reflector.tf).
   - {id: aws-reflector,  category: infra, service: aws-reflector, host: reflector.lat.kgns.dev, protocols: [icmp, tcp, stamp]}
 

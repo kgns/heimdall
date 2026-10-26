@@ -1082,6 +1082,49 @@ def daily() -> dict[str, Any]:
             10,
         ),
     ]
+    p += [
+        L.place(
+            series(
+                "k.root RTT: this line and other lines of the ISP (RIPE Atlas)",
+                """
+                SELECT date_add('hour', hour, CAST(date_parse(dt, '%Y-%m-%d') AS timestamp)) AS time,
+                  'atlas probe ' || CAST(probe_id AS varchar) AS metric, p50 AS value
+                FROM heimdall.atlas_ping
+                WHERE dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND target = 'k-root'
+                UNION ALL
+                SELECT date_trunc('hour', CAST(from_unixtime(ts_ms / 1000.0) AS timestamp)) AS time,
+                  '$device' AS metric, approx_percentile(rtt_ms, 0.5) AS value
+                FROM heimdall.samples
+                WHERE {R} AND kind = 'icmp' AND status = 'ok' AND service = 'k-root'
+                GROUP BY 1, 2
+                ORDER BY 1
+                """,
+                "ms",
+                "Hourly median to k.root-servers.net from the other RIPE Atlas probes in the same ISP, next to "
+                "this CPE. All lines rising together means an ISP-wide issue; this line alone, a local one. "
+                "Atlas rows come from the daily analysis, so the current day is missing.",
+            ),
+            24,
+            10,
+        ),
+        L.place(
+            table(
+                "Outage events from IODA",
+                """
+                SELECT entity, datasource, method, score,
+                  CAST(from_unixtime(start_s) AS timestamp) AS start_time,
+                  CAST(from_unixtime(end_s) AS timestamp) AS end_time
+                FROM heimdall.external_events
+                WHERE dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd')
+                ORDER BY start_s DESC
+                """,
+                "Outages IODA (Georgia Tech) detected for the ISP's AS and the country, from active probing, "
+                "BGP and darknet traffic.",
+            ),
+            24,
+            6,
+        ),
+    ]
     d = dashboard("heimdall-daily", "heimdall / daily analysis", p, [DEVICE])
     d["time"] = {"from": "now-7d", "to": "now"}
     return d

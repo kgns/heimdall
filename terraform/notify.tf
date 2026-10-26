@@ -94,6 +94,7 @@ resource "aws_lambda_function" "notifier" {
       WEBHOOK_PARAMETER = local.slack_webhook_parameter
       CONTROL_DEVICE    = local.cloud_device
       GRAFANA_URL       = "https://${local.grafana_domain}/"
+      DEVICE_ASN        = jsonencode({ for d, a in local.home_asn : d => a if d != local.cloud_device })
     }
   }
 

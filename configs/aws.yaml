@@ -27,6 +27,8 @@ targets:
   - {id: cloudflare-dns, category: infra, service: cloudflare, ip: 1.1.1.1}
   - {id: google-dns,     category: infra, service: google,     ip: 8.8.8.8}
   - {id: quad9-dns,      category: infra, service: quad9,      ip: 9.9.9.9}
+  - {id: k-root,         category: infra, service: k-root,     ip: 193.0.14.129}
+  - {id: f-root,         category: infra, service: f-root,     ip: 192.5.5.241}
 
 catalog:
   path: /opt/heimdall/catalog/targets.yaml
