@@ -45,6 +45,8 @@ collectors:
     enabled: false
   clock:
     interval: 0s
+trace:
+  interval: 0s
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -169,8 +171,9 @@ targets:
 	}
 	// icmp 1/s + two tcp at 1/10s + one http at 1/60s, plus DNS: five
 	// layers at 1/30s and two identity names at 1/60s, plus 32 LAN clients
-	// at 1/5s and the clock check at 1/60s.
-	want := 1 + 0.2 + 1.0/60 + 5.0/30 + 2.0/60 + 32.0/5 + 1.0/60
+	// at 1/5s, the clock check at 1/60s and a 24-hop trace with two probes
+	// per hop every 30s.
+	want := 1 + 0.2 + 1.0/60 + 5.0/30 + 2.0/60 + 32.0/5 + 1.0/60 + 48.0/30
 	if r := c.ProbeRate(); r < want-1e-9 || r > want+1e-9 {
 		t.Fatalf("rate %v, want %v", r, want)
 	}
@@ -185,7 +188,7 @@ targets:
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = 1 + 5 + 5.0/30 + 3.0/60 + 32.0/5 + 1.0/60
+	want = 1 + 5 + 5.0/30 + 3.0/60 + 32.0/5 + 1.0/60 + 48.0/30
 	if r := c.ProbeRate(); r < want-1e-9 || r > want+1e-9 || !c.Targets[0].Wants(ProtoSTAMP) {
 		t.Fatalf("rate %v, want %v", r, want)
 	}

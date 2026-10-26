@@ -34,6 +34,7 @@ type Config struct {
 	HTTP        HTTP        `yaml:"http"`
 	STAMP       STAMP       `yaml:"stamp"`
 	UDP         UDP         `yaml:"udp"`
+	Trace       Trace       `yaml:"trace"`
 	Discovery   Discovery   `yaml:"discovery"`
 	DNS         DNS         `yaml:"dns"`
 	Targets     []Target    `yaml:"targets"`
@@ -205,6 +206,18 @@ type STAMP struct {
 	Port     int           `yaml:"port"`
 }
 
+// Trace configures ICMP traceroutes. One trace runs every Interval, to the
+// targets in turn, so each target is traced about every Interval times the
+// number of distinct destinations. Zero interval disables tracing. Traces
+// need a raw ICMP socket.
+type Trace struct {
+	Interval time.Duration `yaml:"interval"`
+	MaxHops  int           `yaml:"max_hops"`
+	Probes   int           `yaml:"probes"`
+	Timeout  time.Duration `yaml:"timeout"`
+	Gap      time.Duration `yaml:"gap"`
+}
+
 // UDP configures the udp echo and stun probes.
 type UDP struct {
 	Interval time.Duration `yaml:"interval"`
@@ -324,6 +337,7 @@ func Default() Config {
 		HTTP:      HTTP{Interval: time.Minute, Timeout: 10 * time.Second, MaxBody: 32 * KiB},
 		STAMP:     STAMP{Interval: time.Second, Timeout: 2 * time.Second, Port: 862},
 		UDP:       UDP{Interval: 5 * time.Second, Timeout: 2 * time.Second},
+		Trace:     Trace{Interval: 30 * time.Second, MaxHops: 24, Probes: 2, Timeout: 2 * time.Second, Gap: 20 * time.Millisecond},
 		Discovery: Discovery{
 			Enabled: true, Interval: time.Hour, Timeout: 20 * time.Second,
 			// Istanbul.
@@ -471,6 +485,9 @@ func (c *Config) ProbeRate() float64 {
 			}
 			r += float64(n) / d.Identity.Interval.Seconds()
 		}
+	}
+	if tr := c.Trace; tr.Interval > 0 {
+		r += float64(tr.MaxHops*tr.Probes) / tr.Interval.Seconds()
 	}
 	// LAN pings are counted at the worst case of max_clients.
 	if l := c.Collectors.LAN; l.Enabled && l.Interval > 0 {
@@ -681,6 +698,23 @@ func (c *Config) validateProbes(bad func(string, ...any)) {
 	}
 	if c.UDP.Interval < time.Second {
 		bad("udp.interval must be at least 1s")
+	}
+	if tr := c.Trace; tr.Interval != 0 {
+		if tr.Interval < 10*time.Second {
+			bad("trace.interval must be 0 (off) or at least 10s")
+		}
+		if tr.MaxHops < 1 || tr.MaxHops > 64 {
+			bad("trace.max_hops must be between 1 and 64")
+		}
+		if tr.Probes < 1 || tr.Probes > 5 {
+			bad("trace.probes must be between 1 and 5")
+		}
+		if tr.Timeout <= 0 || tr.Timeout > 10*time.Second {
+			bad("trace.timeout must be in (0, 10s]")
+		}
+		if tr.Gap < 0 || tr.Gap > time.Second {
+			bad("trace.gap must be between 0 and 1s")
+		}
 	}
 	if c.UDP.Timeout <= 0 || c.UDP.Timeout > 30*time.Second {
 		bad("udp.timeout must be in (0, 30s]")

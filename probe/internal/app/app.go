@@ -228,6 +228,14 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 			}
 		}
 	}
+	if cfg.Trace.Interval > 0 {
+		if pinger.Mode() == icmp.ModeRaw {
+			sched.Add(newTracer(e, pinger, targets).job())
+			jobCounts["trace"]++
+		} else {
+			log.Warn("traceroute needs a raw ICMP socket; skipping", "icmp_mode", pinger.Mode())
+		}
+	}
 	if cfg.Discovery.Enabled {
 		disc := newDiscovery(e, targets, h.Lookup, nw.Allowed, discoveryArgs)
 		for _, j := range disc.jobs() {

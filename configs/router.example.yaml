@@ -44,6 +44,16 @@ udp:
   interval: 5s
   timeout: 2s
 
+# ICMP traceroutes (kind trace), one every interval, to the targets in turn:
+# about every 30 minutes per destination with ~60 destinations. All TTLs
+# are probed concurrently, gap apart. Needs a raw ICMP socket.
+trace:
+  interval: 30s
+  max_hops: 24
+  probes: 2
+  timeout: 2s
+  gap: 20ms
+
 # Discoverers named in the catalog find the servers a service really uses:
 # the YouTube and Netflix caches this line is mapped to, the nearest Steam
 # relays (by distance from lat/lon), Discord voice regions, GameLift ping
