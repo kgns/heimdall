@@ -101,6 +101,7 @@ collectors:
     # Clients are identified by HMAC(salt, MAC). The salt is created on
     # first start; keep it to keep client IDs stable across restarts.
     salt_file: /misc/heimdall/lan.salt
+    use_leases: false    # leases outlive devices; ARP shows who is actually there
     disappear_after: 3   # missed discoveries before a client counts as gone
   processes:             # daemons on the DNS path, with container memory
     interval: 30s

@@ -200,8 +200,10 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 	jobCounts["dns"] = len(dnsProbes.layers) + len(dnsProbes.identity)
 
 	leaseFile := ""
-	if dm, err := sysinfo.DiscoverDnsmasq(h.FS); err == nil && dm != nil {
-		leaseFile = dm.LeaseFile
+	if cfg.Collectors.LAN.UseLeases {
+		if dm, err := sysinfo.DiscoverDnsmasq(h.FS); err == nil && dm != nil {
+			leaseFile = dm.LeaseFile
+		}
 	}
 	coll := newCollectors(e, h.FS, nw, h.Lookup, leaseFile)
 	if cfg.Collectors.LAN.Enabled {

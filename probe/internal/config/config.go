@@ -66,6 +66,10 @@ type LAN struct {
 	Interfaces       []string      `yaml:"interfaces"`
 	SaltFile         string        `yaml:"salt_file"`
 	DisappearAfter   int           `yaml:"disappear_after"`
+	// UseLeases also probes clients that only appear in the DHCP lease
+	// file. Leases outlive the devices that took them, so this adds
+	// clients that are long gone and only ever time out.
+	UseLeases bool `yaml:"use_leases"`
 }
 
 // Processes lists daemons to follow; zero interval disables it.

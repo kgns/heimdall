@@ -88,8 +88,10 @@ run)
 fetch)
 	need_socket
 	rm -rf "$FETCH_DIR" && mkdir -p "$FETCH_DIR"
-	r "cd $SAMPLES && tar -cf - samples.jsonl* -C /var/tmp heimdall-run.log 2>/dev/null" | tar -C "$FETCH_DIR" -xf -
-	ls -l "$FETCH_DIR"
+	# BusyBox tar applies the last -C to every member, so both paths are
+	# given relative to one directory.
+	r "cd /var/tmp && tar -cf - $(basename "$SAMPLES") $(basename "$LOG")" | tar -C "$FETCH_DIR" -xf -
+	ls -lR "$FETCH_DIR"
 	;;
 sh)
 	need_socket
