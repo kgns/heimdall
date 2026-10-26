@@ -26,6 +26,7 @@ log.setLevel(logging.INFO)
 
 RETENTION_DAYS = 30
 WEBHOOK_CACHE_SECONDS = 300
+OPEN_MAX_AGE_S = 24 * 3600
 
 CAUSES = {
     "access_network": "access network: the ISP hops or most services degraded together",
@@ -152,10 +153,15 @@ class Notifier:
         self.device_asn, self.access_note = device_asn or {}, access_note
 
     def open_services(self, device: str) -> set[str]:
+        """Services in the device's open incidents. Incidents that started
+        more than a day ago are left out: a probe that stopped without
+        ending them leaves them open."""
         from boto3.dynamodb.conditions import Attr, Key
 
+        since_ms = int((self.now() - OPEN_MAX_AGE_S) * 1000)
         resp = self.table.query(
-            KeyConditionExpression=Key("device").eq(device), FilterExpression=Attr("status").eq("open")
+            KeyConditionExpression=Key("device").eq(device),
+            FilterExpression=Attr("status").eq("open") & Attr("started_ms").gte(since_ms),
         )
         out: set[str] = set()
         for item in resp.get("Items", []):

@@ -67,6 +67,8 @@ def test_incident_lifecycle_and_control(aws):
     assert "ex7501-home" in text and "netflix" in text and "d/heimdall-overview" in text
 
     n({"device": "aws-euc1", "events": [ev("incident_end", incident_id="c1", duration_s=300)]})
+    # An incident the control left open two days ago does not count.
+    n({"device": "aws-euc1", "events": [ev("incident_start", incident_id="c0", started_ms=1_792_840_000_000)]})
     n({"device": "ex7501-home", "events": [ev("incident_start", incident_id="i3")]})
     assert "normal from eu-central-1" in posts[-1][1]
 
