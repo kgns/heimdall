@@ -891,6 +891,284 @@
         "h": 9
       },
       "id": 16
+    },
+    {
+      "type": "row",
+      "title": "Path to AWS (STAMP reflector)",
+      "collapsed": false,
+      "panels": [],
+      "id": 17,
+      "gridPos": {
+        "x": 0,
+        "y": 58,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Reflector RTT",
+      "description": "udp_echo is STAMP without the reflector's turnaround; icmp and tcp go to the same instance.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0,
+          "displayName": "${__field.labels.metric}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, kind || ' p50' AS metric, approx_percentile(rtt_ms, 0.5) AS value FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND service = 'aws-reflector' AND status = 'ok' AND kind IN ('udp_echo', 'icmp', 'tcp') GROUP BY 1, 2 UNION ALL SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, kind || ' p95' AS metric, approx_percentile(rtt_ms, 0.95) AS value FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND service = 'aws-reflector' AND status = 'ok' AND kind = 'udp_echo' GROUP BY 1, 2 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 59,
+        "w": 12,
+        "h": 9
+      },
+      "id": 18
+    },
+    {
+      "type": "timeseries",
+      "title": "Queueing delay by direction",
+      "description": "One-way delay above its minimum over the range. The clocks' constant offset cancels out, so this shows in which direction packets wait: up is CPE to AWS, down is AWS to CPE.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "WITH s AS ( SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, CAST(json_extract_scalar(extra, '$.fwd_ms') AS double) AS fwd, CAST(json_extract_scalar(extra, '$.rev_ms') AS double) AS rev FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'udp_echo' AND status = 'ok' ), m AS (SELECT min(fwd) AS f0, min(rev) AS r0 FROM s) SELECT time, approx_percentile(fwd - f0, 0.5) AS up_p50, approx_percentile(fwd - f0, 0.95) AS up_p95, approx_percentile(rev - r0, 0.5) AS down_p50, approx_percentile(rev - r0, 0.95) AS down_p95 FROM s CROSS JOIN m GROUP BY 1 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 59,
+        "w": 12,
+        "h": 9
+      },
+      "id": 19
+    },
+    {
+      "type": "timeseries",
+      "title": "Loss by direction",
+      "description": "Requests that never reached the reflector (up) and replies that never came back (down).",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 60,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, sum(CAST(json_extract_scalar(extra, '$.lost_up') AS bigint)) AS lost_up, sum(CAST(json_extract_scalar(extra, '$.lost_down') AS bigint)) AS lost_down, count_if(status <> 'ok') AS timeouts FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'udp_echo' GROUP BY 1 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 68,
+        "w": 12,
+        "h": 9
+      },
+      "id": 20
+    },
+    {
+      "type": "timeseries",
+      "title": "Forward hop count",
+      "description": "Routers between the CPE and the reflector; a step is a route change.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, min(CAST(json_extract_scalar(extra, '$.fwd_hops') AS bigint)) AS min_hops, max(CAST(json_extract_scalar(extra, '$.fwd_hops') AS bigint)) AS max_hops FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'udp_echo' AND status = 'ok' GROUP BY 1 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 68,
+        "w": 12,
+        "h": 9
+      },
+      "id": 21
     }
   ]
 }

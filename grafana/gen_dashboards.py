@@ -26,6 +26,12 @@ RANGE = (
     " AND ts_ms BETWEEN ${__from} AND ${__to}"
 )
 BUCKET = "CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp)"
+# The same range for every device, for comparisons between the CPE and the
+# cloud probe.
+RANGE_ALL = (
+    "dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to}"
+)
+CLOUD_DEVICE = "aws-euc1"
 # Services measured from the CPE; infra (ISP hops, resolvers, CPE counters)
 # and home (LAN clients) have their own dashboard.
 SERVICES = "category NOT IN ('infra', 'home')"
@@ -35,7 +41,7 @@ TIME_SERIES, TABLE = 0, 1
 def sql(text: str, **subs: str) -> str:
     """Expands the placeholders and collapses whitespace. Values are fixed
     strings from this file or Grafana variables, never user input."""
-    subs = {"R": RANGE, "B": BUCKET, "S": SERVICES, **subs}
+    subs = {"RA": RANGE_ALL, "R": RANGE, "B": BUCKET, "S": SERVICES, "CLOUD": CLOUD_DEVICE, **subs}
     for k, v in subs.items():
         text = text.replace("{" + k + "}", v)
     return " ".join(text.split())
@@ -413,6 +419,39 @@ def service() -> dict[str, Any]:
             9,
         ),
         L.place(
+            series(
+                "ICMP RTT p50: this device and the AWS control",
+                """
+                SELECT {B} AS time, device AS metric, approx_percentile(rtt_ms, 0.5) AS value
+                FROM heimdall.samples
+                WHERE {RA} AND device IN ('$device', '{CLOUD}') AND kind = 'icmp' AND status = 'ok'
+                  AND service = '$service'
+                GROUP BY 1, 2 ORDER BY 1
+                """,
+                "ms",
+                "The same service measured from AWS eu-central-1. A change in both lines is the service's own; "
+                "a change only from the CPE is in the access network or the ISP's path to the service.",
+            ),
+            12,
+            9,
+        ),
+        L.place(
+            series(
+                "HTTPS time to first byte p50: this device and the AWS control",
+                """
+                SELECT {B} AS time, device AS metric,
+                  approx_percentile(CAST(json_extract_scalar(extra, '$.ttfb_ms') AS double), 0.5) AS value
+                FROM heimdall.samples
+                WHERE {RA} AND device IN ('$device', '{CLOUD}') AND kind = 'http' AND status = 'ok'
+                  AND service = '$service'
+                GROUP BY 1, 2 ORDER BY 1
+                """,
+                "ms",
+            ),
+            12,
+            9,
+        ),
+        L.place(
             table(
                 "HTTPS edges",
                 """
@@ -690,6 +729,94 @@ def network() -> dict[str, Any]:
                 GROUP BY 1 ORDER BY 1
                 """,
                 "short",
+                long=False,
+            ),
+            12,
+            9,
+        ),
+    ]
+    p.append(L.row("Path to AWS (STAMP reflector)"))
+    p += [
+        L.place(
+            series(
+                "Reflector RTT",
+                """
+                SELECT {B} AS time, kind || ' p50' AS metric, approx_percentile(rtt_ms, 0.5) AS value
+                FROM heimdall.samples
+                WHERE {R} AND service = 'aws-reflector' AND status = 'ok' AND kind IN ('udp_echo', 'icmp', 'tcp')
+                GROUP BY 1, 2
+                UNION ALL
+                SELECT {B} AS time, kind || ' p95' AS metric, approx_percentile(rtt_ms, 0.95) AS value
+                FROM heimdall.samples
+                WHERE {R} AND service = 'aws-reflector' AND status = 'ok' AND kind = 'udp_echo'
+                GROUP BY 1, 2
+                ORDER BY 1
+                """,
+                "ms",
+                "udp_echo is STAMP without the reflector's turnaround; icmp and tcp go to the same instance.",
+            ),
+            12,
+            9,
+        ),
+        L.place(
+            series(
+                "Queueing delay by direction",
+                """
+                WITH s AS (
+                  SELECT {B} AS time,
+                    CAST(json_extract_scalar(extra, '$.fwd_ms') AS double) AS fwd,
+                    CAST(json_extract_scalar(extra, '$.rev_ms') AS double) AS rev
+                  FROM heimdall.samples
+                  WHERE {R} AND kind = 'udp_echo' AND status = 'ok'
+                ),
+                m AS (SELECT min(fwd) AS f0, min(rev) AS r0 FROM s)
+                SELECT time,
+                  approx_percentile(fwd - f0, 0.5) AS up_p50, approx_percentile(fwd - f0, 0.95) AS up_p95,
+                  approx_percentile(rev - r0, 0.5) AS down_p50, approx_percentile(rev - r0, 0.95) AS down_p95
+                FROM s CROSS JOIN m
+                GROUP BY 1 ORDER BY 1
+                """,
+                "ms",
+                "One-way delay above its minimum over the range. The clocks' constant offset cancels out, so "
+                "this shows in which direction packets wait: up is CPE to AWS, down is AWS to CPE.",
+                long=False,
+            ),
+            12,
+            9,
+        ),
+        L.place(
+            series(
+                "Loss by direction",
+                """
+                SELECT {B} AS time,
+                  sum(CAST(json_extract_scalar(extra, '$.lost_up') AS bigint)) AS lost_up,
+                  sum(CAST(json_extract_scalar(extra, '$.lost_down') AS bigint)) AS lost_down,
+                  count_if(status <> 'ok') AS timeouts
+                FROM heimdall.samples
+                WHERE {R} AND kind = 'udp_echo'
+                GROUP BY 1 ORDER BY 1
+                """,
+                "short",
+                "Requests that never reached the reflector (up) and replies that never came back (down).",
+                long=False,
+                bars=True,
+            ),
+            12,
+            9,
+        ),
+        L.place(
+            series(
+                "Forward hop count",
+                """
+                SELECT {B} AS time,
+                  min(CAST(json_extract_scalar(extra, '$.fwd_hops') AS bigint)) AS min_hops,
+                  max(CAST(json_extract_scalar(extra, '$.fwd_hops') AS bigint)) AS max_hops
+                FROM heimdall.samples
+                WHERE {R} AND kind = 'udp_echo' AND status = 'ok'
+                GROUP BY 1 ORDER BY 1
+                """,
+                "short",
+                "Routers between the CPE and the reflector; a step is a route change.",
                 long=False,
             ),
             12,

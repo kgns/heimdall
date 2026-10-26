@@ -30,11 +30,21 @@ http:                    # one HTTPS GET on a fresh connection, no redirects
   max_body: 32KiB
   user_agent: ""         # default: heimdall-probe/<version> (latency measurement)
 
+# STAMP (RFC 8762) test packets to targets with protocols [stamp]: round
+# trip without the reflector's turnaround, one-way delays, forward hop count
+# and whether losses happened on the way out or back.
+stamp:
+  interval: 1s
+  timeout: 2s
+  port: 862
+
 # Layered DNS probes. The local and upstream layers are discovered from the
-# running dnsmasq (or resolv.conf without it). uncached_zone needs a
-# wildcard zone; leave it empty until one exists. DoH servers are reached at
-# a fixed IP and compared against the system path. identity names are TXT
-# "whoami" records that reveal which resolver answers for the system path.
+# running dnsmasq (or resolv.conf without it). uncached_zone is a wildcard
+# zone: a random label under it is resolved through the full path on every
+# probe. DoH servers are reached at a fixed IP and compared against the
+# system path. identity reveals which resolver answers for the system path:
+# zone is a whoami zone queried with random labels (always current); names
+# are fixed whoami records, used only when no zone is set.
 dns:
   enabled: true
   interval: 30s
@@ -42,13 +52,14 @@ dns:
   names: [www.google.com, www.wikipedia.org]
   local: true
   upstreams: true
-  uncached_zone: ""
+  uncached_zone: w.lat.kgns.dev
   doh:
     - {id: google,     url: https://dns.google/dns-query,         ip: 8.8.8.8}
     - {id: cloudflare, url: https://cloudflare-dns.com/dns-query, ip: 1.1.1.1}
   identity:
     interval: 60s
     names: [whoami.ds.akahelp.net, o-o.myaddr.l.google.com]
+    zone: w.lat.kgns.dev
 
 # Targets whose route leaves through an interface other than the default
 # route's (for example an operator management VLAN) are never probed.
@@ -65,6 +76,8 @@ targets:
   - {id: cloudflare-dns, category: infra, service: cloudflare,  ip: 1.1.1.1}
   - {id: google-dns,     category: infra, service: google,      ip: 8.8.8.8}
   - {id: quad9-dns,      category: infra, service: quad9,       ip: 9.9.9.9}
+  # heimdall-reflector in AWS eu-central-1 (terraform/reflector.tf).
+  - {id: aws-reflector,  category: infra, service: aws-reflector, host: reflector.lat.kgns.dev, protocols: [icmp, tcp, stamp]}
 
 # Service catalog. Each host becomes a target "<service>/<host>", resolved
 # through the system resolver (on the CPE: dnsmasq and whatever it forwards

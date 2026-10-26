@@ -31,7 +31,9 @@ resource "aws_s3_object" "reflector" {
   bucket   = aws_s3_bucket.artifacts.id
   key      = each.key
   source   = each.value
-  etag     = filemd5(each.value)
+  # Binaries above the multipart threshold get an ETag that is not their
+  # MD5, so change detection uses source_hash instead.
+  source_hash = filemd5(each.value)
 }
 
 # Upload token of the cloud probe. The instance reads the token; the ingest

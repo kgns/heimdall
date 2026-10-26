@@ -142,3 +142,33 @@ because the task's public IP changes on each deploy. The name is a direct
 child of the zone: Cloudflare's Universal SSL certificate covers only
 `kgns.dev` and `*.kgns.dev`, so a proxied name under `lat.kgns.dev` gets no
 edge certificate.
+
+## Reflector and cloud probe
+
+`terraform/reflector.tf` runs one t4g.micro in eu-central-1 with an Elastic
+IP (`reflector.lat.kgns.dev`). It has two services:
+
+- `heimdall-reflector`: a STAMP session-reflector (RFC 8762, UDP 862), a TCP
+  port 443 that accepts and closes, and the authoritative server for
+  `w.lat.kgns.dev`. Any name under that zone answers with the address of the
+  resolver that asked (TXT `"ns" "<address>"`, plus `"ecs" "<prefix>"` when
+  the resolver sends an EDNS client subnet; A for IPv4 resolvers).
+- `heimdall-probe` as device `aws-euc1` (`configs/aws.yaml`). It measures the
+  same catalog from AWS as a control: if a service gets worse from both
+  places, the problem is the service; if only from the CPE, it is the access
+  network or the ISP's path.
+
+On the CPE, the `aws-reflector` target measures STAMP next to ICMP and TCP.
+STAMP samples (`kind = 'udp_echo'`) carry the one-way delays (`fwd_ms`,
+`rev_ms`, which include the clock offset), the reflector's turnaround
+(`proc_ms`), the forward hop count, and `lost_up` / `lost_down`. These
+count the requests and the replies lost since the previous reply.
+`dns.identity.zone` and `dns.uncached_zone` both use `w.lat.kgns.dev`, so
+every identity answer is current and the uncached layer times the full
+resolver path.
+
+The instance installs its binaries and configuration from the artifacts
+bucket at boot. Run `make build-arm64` before `terraform apply`: a changed
+binary, catalog or config replaces the instance, which keeps its address.
+Logs go to the CloudWatch log group `/heimdall/reflector`, and Session
+Manager gives a shell. There is no SSH.

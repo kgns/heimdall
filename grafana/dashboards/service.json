@@ -507,6 +507,140 @@
       "id": 6
     },
     {
+      "type": "timeseries",
+      "title": "ICMP RTT p50: this device and the AWS control",
+      "description": "The same service measured from AWS eu-central-1. A change in both lines is the service's own; a change only from the CPE is in the access network or the ISP's path to the service.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0,
+          "displayName": "${__field.labels.metric}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, device AS metric, approx_percentile(rtt_ms, 0.5) AS value FROM heimdall.samples WHERE dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND device IN ('$device', 'aws-euc1') AND kind = 'icmp' AND status = 'ok' AND service = '$service' GROUP BY 1, 2 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 27,
+        "w": 12,
+        "h": 9
+      },
+      "id": 7
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTPS time to first byte p50: this device and the AWS control",
+      "description": "",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0,
+          "displayName": "${__field.labels.metric}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, device AS metric, approx_percentile(CAST(json_extract_scalar(extra, '$.ttfb_ms') AS double), 0.5) AS value FROM heimdall.samples WHERE dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND device IN ('$device', 'aws-euc1') AND kind = 'http' AND status = 'ok' AND service = '$service' GROUP BY 1, 2 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 27,
+        "w": 12,
+        "h": 9
+      },
+      "id": 8
+    },
+    {
       "type": "table",
       "title": "HTTPS edges",
       "description": "Where each destination terminated the HTTPS request, from the response headers.",
@@ -567,11 +701,11 @@
       ],
       "gridPos": {
         "x": 0,
-        "y": 27,
+        "y": 36,
         "w": 24,
         "h": 7
       },
-      "id": 7
+      "id": 9
     },
     {
       "type": "table",
@@ -622,11 +756,11 @@
       ],
       "gridPos": {
         "x": 0,
-        "y": 34,
+        "y": 43,
         "w": 12,
         "h": 9
       },
-      "id": 8
+      "id": 10
     },
     {
       "type": "table",
@@ -677,11 +811,11 @@
       ],
       "gridPos": {
         "x": 12,
-        "y": 34,
+        "y": 43,
         "w": 12,
         "h": 9
       },
-      "id": 9
+      "id": 11
     }
   ]
 }
