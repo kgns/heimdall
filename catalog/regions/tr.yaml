@@ -7,7 +7,7 @@ services:
     name: TV+
     category: streaming
     hosts: [tvplus.com.tr]
-    protocols: [tcp]
+    protocols: [tcp, http]
     notes: drops ICMP; hosted inside Turkcell's network
   - id: tod
     name: TOD
@@ -48,7 +48,7 @@ services:
     name: BiP
     category: messaging
     hosts: [www.bip.com]
-    protocols: [tcp]
+    protocols: [tcp, http]
     notes: drops ICMP; hosted inside Turkcell's network
 
   # browsing
@@ -56,7 +56,7 @@ services:
     name: e-Devlet
     category: browsing
     hosts: [www.turkiye.gov.tr]
-    protocols: [tcp]
+    protocols: [tcp, http]
     notes: drops ICMP
   - id: trendyol
     name: Trendyol

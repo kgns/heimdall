@@ -37,8 +37,9 @@ func runCheck(ctx context.Context, args []string) error {
 	fmt.Printf("config ok: %d targets, %.1f probes/s (budget %.1f)\n", len(cfg.Targets), cfg.ProbeRate(), cfg.Scheduler.MaxPPS)
 	if cfg.Catalog.Path != "" {
 		fmt.Printf("catalog: %s, regions %v, %d services selected\n", cfg.Catalog.Path, cfg.Catalog.Regions, len(services))
-		printNonICMP(services)
+		printPending(services)
 	}
+	printDNS(cfg)
 
 	var lookups map[string]resolve.Result
 	if *doResolve {
@@ -48,7 +49,7 @@ func runCheck(ctx context.Context, args []string) error {
 	}
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "\nID\tCATEGORY\tSERVICE\tDESTINATION\tEVERY\tRESOLVED")
+	fmt.Fprintln(tw, "\nID\tCATEGORY\tSERVICE\tDESTINATION\tPROTOCOLS\tICMP EVERY\tRESOLVED")
 	for _, t := range cfg.Targets {
 		dst := t.IP
 		switch {
@@ -73,29 +74,60 @@ func runCheck(ctx context.Context, args []string) error {
 				}
 			}
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%v\t%s\n", t.ID, t.Category, t.Service, dst, cfg.TargetInterval(t), resolved)
+		protos := t.Protocols
+		if len(protos) == 0 {
+			protos = []string{config.ProtoICMP}
+		}
+		every := "-"
+		if t.Wants(config.ProtoICMP) {
+			every = cfg.TargetInterval(t).String()
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, t.Category, t.Service, dst, strings.Join(protos, ","), every, resolved)
 	}
 	return tw.Flush()
 }
 
-func printNonICMP(services []catalog.Service) {
+func printPending(services []catalog.Service) {
 	var pending []string
 	for _, s := range services {
-		var what []string
-		for _, p := range s.Protocols {
-			if p != "icmp" {
-				what = append(what, p)
-			}
-		}
-		what = append(what, s.Discovery...)
-		if len(what) > 0 {
-			pending = append(pending, fmt.Sprintf("%s (%s)", s.ID, strings.Join(what, ", ")))
+		if len(s.Discovery) > 0 {
+			pending = append(pending, fmt.Sprintf("%s (%s)", s.ID, strings.Join(s.Discovery, ", ")))
 		}
 	}
 	if len(pending) > 0 {
 		sort.Strings(pending)
-		fmt.Printf("not measured by this version yet: %s\n", strings.Join(pending, "; "))
+		fmt.Printf("discovery not run by this version yet: %s\n", strings.Join(pending, "; "))
 	}
+}
+
+func printDNS(cfg config.Config) {
+	d := cfg.DNS
+	if !d.Enabled {
+		fmt.Println("dns probes: disabled")
+		return
+	}
+	var layers []string
+	dm, _ := sysinfo.DiscoverDnsmasq(os.DirFS("/"))
+	if d.Local {
+		if dm != nil {
+			layers = append(layers, fmt.Sprintf("local 127.0.0.1:%d", dm.ListenPort))
+		} else {
+			layers = append(layers, "system (resolv.conf)")
+		}
+	}
+	if d.Upstreams && dm != nil {
+		for _, u := range dm.Upstreams() {
+			layers = append(layers, "upstream "+u.Addr.String())
+		}
+	}
+	if d.UncachedZone != "" {
+		layers = append(layers, "uncached *."+d.UncachedZone)
+	}
+	for _, s := range d.DoH {
+		layers = append(layers, fmt.Sprintf("doh %s %s", s.ID, s.IP))
+	}
+	fmt.Printf("dns probes every %v: %s; names %v; identity %v every %v\n",
+		d.Interval, strings.Join(layers, ", "), d.Names, d.Identity.Names, d.Identity.Interval)
 }
 
 // resolveAll resolves every hostname target once, as the probe would at

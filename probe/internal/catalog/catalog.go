@@ -63,12 +63,22 @@ type Service struct {
 // IsEnabled reports whether the service is switched on.
 func (s Service) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
 
+// DefaultProtocols apply to services that do not list their own: every
+// service is measured at the network (ICMP), transport (TCP) and
+// application (HTTPS) level, so the three can be compared.
+var DefaultProtocols = []string{"icmp", "tcp", "http"}
+
+// EffectiveProtocols returns the protocols the service is measured with.
+func (s Service) EffectiveProtocols() []string {
+	if len(s.Protocols) == 0 {
+		return DefaultProtocols
+	}
+	return s.Protocols
+}
+
 // Wants reports whether the service requests protocol p.
 func (s Service) Wants(p string) bool {
-	if len(s.Protocols) == 0 {
-		return p == "icmp"
-	}
-	return slices.Contains(s.Protocols, p)
+	return slices.Contains(s.EffectiveProtocols(), p)
 }
 
 var serviceID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,47}$`)
@@ -192,29 +202,34 @@ func Select(services []Service, only, exclude []string) []Service {
 	return out
 }
 
-// ICMPTargets turns each host and IP of the services that request ICMP into
-// a target with ID "<service>/<host or ip>".
-func ICMPTargets(services []Service) []config.Target {
+// Targets turns each host and IP of the services into a target with ID
+// "<service>/<host or ip>", measured with the service's protocols. HTTP
+// needs a hostname, so IP entries drop it.
+func Targets(services []Service) []config.Target {
 	var out []config.Target
 	for _, s := range services {
-		if !s.Wants("icmp") {
-			continue
-		}
+		protos := s.EffectiveProtocols()
 		for _, h := range s.Hosts {
 			out = append(out, config.Target{
-				ID: s.ID + "/" + h, Category: s.Category, Service: s.ID, Host: h, Interval: s.ICMPInterval,
+				ID: s.ID + "/" + h, Category: s.Category, Service: s.ID, Host: h,
+				Interval: s.ICMPInterval, Protocols: slices.Clone(protos),
 			})
+		}
+		ipProtos := slices.DeleteFunc(slices.Clone(protos), func(p string) bool { return p == "http" })
+		if len(ipProtos) == 0 {
+			continue
 		}
 		for _, ip := range s.IPs {
 			out = append(out, config.Target{
-				ID: s.ID + "/" + ip, Category: s.Category, Service: s.ID, IP: ip, Interval: s.ICMPInterval,
+				ID: s.ID + "/" + ip, Category: s.Category, Service: s.ID, IP: ip,
+				Interval: s.ICMPInterval, Protocols: ipProtos,
 			})
 		}
 	}
 	return out
 }
 
-// Apply loads the catalog configured in cfg, appends its ICMP targets to
+// Apply loads the catalog configured in cfg, appends its targets to
 // cfg.Targets and re-validates the result, so that ID clashes and the probe
 // budget cover catalog and configured targets together. It returns the
 // selected services. A config without a catalog path is left unchanged.
@@ -227,7 +242,7 @@ func Apply(cfg *config.Config) ([]Service, error) {
 		return nil, err
 	}
 	services := Select(all, cfg.Catalog.Only, cfg.Catalog.Exclude)
-	cfg.Targets = append(cfg.Targets, ICMPTargets(services)...)
+	cfg.Targets = append(cfg.Targets, Targets(services)...)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

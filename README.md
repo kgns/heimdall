@@ -58,6 +58,26 @@ heimdall-probe check -config /misc/heimdall/config.yaml -resolve
 resolves every host once and shows the chosen address, the number of
 answers and the lookup time, and flags addresses the route guard blocks.
 
+## Measurements
+
+Catalog services are measured three ways on the same address unless they
+list their own `protocols`:
+
+| kind | what | default interval | `rtt_ms` |
+|---|---|---|---|
+| `icmp` | echo request | 1 s | echo round trip |
+| `tcp` | connect to :443, then RST | 10 s | SYN to SYN-ACK |
+| `http` | HTTPS GET on a fresh connection, no redirects | 60 s | start to first response byte |
+
+HTTP samples keep `connect_ms`, `tls_ms`, `ttfb_ms`, `total_ms`, status
+code, protocol and, where response headers reveal it, the CDN and PoP.
+
+DNS is probed per layer every 30 s: the local forwarder (`local`), each of
+its upstreams (`upstream`), an optional cache-busting `uncached` layer and
+DoH resolvers reached directly (`doh`). Whoami TXT names (`identity`)
+reveal which resolver answers for the system path; samples on that path
+carry it as `resolver_id`, as do `dst_change` events.
+
 ## Self-test
 
 ```sh

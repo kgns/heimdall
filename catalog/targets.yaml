@@ -2,7 +2,7 @@
 #
 # Each service lists the hostnames (resolved through the CPE's own resolver,
 # like LAN clients do) or static IPs to measure. protocols defaults to
-# [icmp]; services whose endpoints drop ICMP use tcp or http instead.
+# [icmp, tcp, http]; services whose endpoints drop ICMP list [tcp, http].
 # discovery names mechanisms that find the servers the service really uses
 # for its traffic (video caches, game relays, voice regions).
 version: 1
@@ -99,7 +99,7 @@ services:
     name: Telegram
     category: messaging
     hosts: [web.telegram.org]
-    protocols: [tcp]
+    protocols: [tcp, http]
     notes: drops ICMP
 
   # browsing
@@ -151,25 +151,25 @@ services:
     name: AWS Frankfurt
     category: cloud_work
     hosts: [dynamodb.eu-central-1.amazonaws.com]
-    protocols: [tcp]
+    protocols: [tcp, http]
     notes: AWS service endpoints usually drop ICMP
   - id: aws-eu-south-1
     name: AWS Milan
     category: cloud_work
     hosts: [dynamodb.eu-south-1.amazonaws.com]
-    protocols: [tcp]
+    protocols: [tcp, http]
   - id: aws-eu-north-1
     name: AWS Stockholm
     category: cloud_work
     hosts: [dynamodb.eu-north-1.amazonaws.com]
-    protocols: [tcp]
+    protocols: [tcp, http]
   - id: aws-il-central-1
     name: AWS Tel Aviv
     category: cloud_work
     hosts: [dynamodb.il-central-1.amazonaws.com]
-    protocols: [tcp]
+    protocols: [tcp, http]
   - id: aws-me-central-1
     name: AWS UAE
     category: cloud_work
     hosts: [dynamodb.me-central-1.amazonaws.com]
-    protocols: [tcp]
+    protocols: [tcp, http]

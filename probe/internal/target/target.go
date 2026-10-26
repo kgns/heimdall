@@ -21,8 +21,12 @@ type Target struct {
 	Host string
 	// TTL, when non-zero, limits the probe's IP TTL so that the router at
 	// that hop answers instead of the destination.
-	TTL      int
+	TTL int
+	// Interval is the ICMP probe interval.
 	Interval time.Duration
+	// Port and Path are used by the TCP and HTTP probes.
+	Port int
+	Path string
 
 	dst     atomic.Pointer[netip.Addr]
 	blocked atomic.Bool

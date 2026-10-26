@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -27,6 +28,9 @@ type Config struct {
 	Runtime     Runtime     `yaml:"runtime"`
 	Scheduler   Scheduler   `yaml:"scheduler"`
 	ICMP        ICMP        `yaml:"icmp"`
+	TCP         TCP         `yaml:"tcp"`
+	HTTP        HTTP        `yaml:"http"`
+	DNS         DNS         `yaml:"dns"`
 	Targets     []Target    `yaml:"targets"`
 	Catalog     Catalog     `yaml:"catalog"`
 	Output      Output      `yaml:"output"`
@@ -61,15 +65,93 @@ type ICMP struct {
 // sent towards IP with that IP TTL and the target measured is the router
 // where it expires, which answers with ICMP time exceeded. This reaches
 // routers that ignore echo requests addressed to themselves.
+//
+// Protocols selects icmp, tcp and http measurements of the same address;
+// it defaults to icmp. Interval applies to ICMP; TCP and HTTP use their own
+// section's interval.
 type Target struct {
-	ID       string        `yaml:"id"`
-	Category string        `yaml:"category"`
-	Service  string        `yaml:"service"`
-	IP       string        `yaml:"ip"`
-	Host     string        `yaml:"host"`
-	Auto     string        `yaml:"auto"`
-	TTL      int           `yaml:"ttl"`
+	ID        string        `yaml:"id"`
+	Category  string        `yaml:"category"`
+	Service   string        `yaml:"service"`
+	IP        string        `yaml:"ip"`
+	Host      string        `yaml:"host"`
+	Auto      string        `yaml:"auto"`
+	TTL       int           `yaml:"ttl"`
+	Interval  time.Duration `yaml:"interval"`
+	Protocols []string      `yaml:"protocols"`
+	// Port is the TCP port, defaulting to tcp.port.
+	Port int `yaml:"port"`
+	// Path is the HTTP request path, defaulting to "/".
+	Path string `yaml:"path"`
+}
+
+// Protocol names.
+const (
+	ProtoICMP = "icmp"
+	ProtoTCP  = "tcp"
+	ProtoHTTP = "http"
+)
+
+// Wants reports whether t is measured with protocol p.
+func (t Target) Wants(p string) bool {
+	if len(t.Protocols) == 0 {
+		return p == ProtoICMP
+	}
+	for _, x := range t.Protocols {
+		if x == p {
+			return true
+		}
+	}
+	return false
+}
+
+// TCP configures TCP connect probes.
+type TCP struct {
 	Interval time.Duration `yaml:"interval"`
+	Timeout  time.Duration `yaml:"timeout"`
+	Port     int           `yaml:"port"`
+}
+
+// HTTP configures HTTPS request probes.
+type HTTP struct {
+	Interval time.Duration `yaml:"interval"`
+	Timeout  time.Duration `yaml:"timeout"`
+	MaxBody  ByteSize      `yaml:"max_body"`
+	// UserAgent defaults to one naming the probe and its version.
+	UserAgent string `yaml:"user_agent"`
+}
+
+// DNS configures the layered DNS probes: the local forwarder, each of its
+// upstreams, an optional uncached path through a wildcard zone, and DoH
+// resolvers reached directly for comparison.
+type DNS struct {
+	Enabled  bool          `yaml:"enabled"`
+	Interval time.Duration `yaml:"interval"`
+	Timeout  time.Duration `yaml:"timeout"`
+	// Names are queried in turn on the cached layers.
+	Names     []string `yaml:"names"`
+	Local     bool     `yaml:"local"`
+	Upstreams bool     `yaml:"upstreams"`
+	// UncachedZone, when set, is a wildcard zone; a random label under it
+	// is resolved through the local forwarder on every probe, so no cache
+	// on the way can answer.
+	UncachedZone string      `yaml:"uncached_zone"`
+	DoH          []DoHServer `yaml:"doh"`
+	Identity     Identity    `yaml:"identity"`
+}
+
+// DoHServer is a DNS-over-HTTPS resolver reached at a fixed address.
+type DoHServer struct {
+	ID  string `yaml:"id"`
+	URL string `yaml:"url"`
+	IP  string `yaml:"ip"`
+}
+
+// Identity configures resolver identification through whoami TXT names,
+// resolved through the local forwarder.
+type Identity struct {
+	Interval time.Duration `yaml:"interval"`
+	Names    []string      `yaml:"names"`
 }
 
 // Catalog points at the service catalog and selects what to load from it.
@@ -123,6 +205,18 @@ func Default() Config {
 		Scheduler: Scheduler{MaxPPS: 100, Burst: 10},
 		Catalog:   Catalog{ResolveInterval: 5 * time.Minute, ResolveTimeout: 5 * time.Second},
 		ICMP:      ICMP{Mode: "auto", Interval: time.Second, Timeout: 2 * time.Second, PayloadSize: 32},
+		TCP:       TCP{Interval: 10 * time.Second, Timeout: 3 * time.Second, Port: 443},
+		HTTP:      HTTP{Interval: time.Minute, Timeout: 10 * time.Second, MaxBody: 32 * KiB},
+		DNS: DNS{
+			Enabled: true, Interval: 30 * time.Second, Timeout: 3 * time.Second,
+			Names: []string{"www.google.com", "www.wikipedia.org"},
+			Local: true, Upstreams: true,
+			DoH: []DoHServer{
+				{ID: "google", URL: "https://dns.google/dns-query", IP: "8.8.8.8"},
+				{ID: "cloudflare", URL: "https://cloudflare-dns.com/dns-query", IP: "1.1.1.1"},
+			},
+			Identity: Identity{Interval: time.Minute, Names: []string{"whoami.ds.akahelp.net", "o-o.myaddr.l.google.com"}},
+		},
 		Output: Output{JSONL: JSONL{
 			Enabled: true, Dir: "/var/tmp/heimdall", MaxFileSize: 4 * MiB, MaxFiles: 3,
 		}},
@@ -187,11 +281,48 @@ func (c *Config) TargetInterval(t Target) time.Duration {
 	return c.ICMP.Interval
 }
 
-// ProbeRate returns the configured probes per second across all targets.
+// TargetPort returns the TCP port of t.
+func (c *Config) TargetPort(t Target) int {
+	if t.Port > 0 {
+		return t.Port
+	}
+	return c.TCP.Port
+}
+
+// assumedUpstreams is used for budget estimates, because the number of
+// forwarder upstreams is only known at runtime.
+const assumedUpstreams = 2
+
+// ProbeRate returns the configured probes per second across all targets
+// and protocols, including DNS probes.
 func (c *Config) ProbeRate() float64 {
 	var r float64
 	for _, t := range c.Targets {
-		r += 1 / c.TargetInterval(t).Seconds()
+		if t.Wants(ProtoICMP) {
+			r += 1 / c.TargetInterval(t).Seconds()
+		}
+		if t.Wants(ProtoTCP) && c.TCP.Interval > 0 {
+			r += 1 / c.TCP.Interval.Seconds()
+		}
+		if t.Wants(ProtoHTTP) && c.HTTP.Interval > 0 {
+			r += 1 / c.HTTP.Interval.Seconds()
+		}
+	}
+	if d := c.DNS; d.Enabled && d.Interval > 0 {
+		layers := len(d.DoH)
+		if d.Local {
+			layers++
+		}
+		if d.Upstreams {
+			layers += assumedUpstreams
+		}
+		if d.UncachedZone != "" {
+			layers++
+		}
+		r += float64(layers) / d.Interval.Seconds()
+		if d.Identity.Interval > 0 {
+			r += float64(len(d.Identity.Names)) / d.Identity.Interval.Seconds()
+		}
 	}
 	return r
 }
@@ -253,6 +384,8 @@ func (c *Config) Validate() error {
 		bad("icmp.payload_size %d must be between 8 and 1400", c.ICMP.PayloadSize)
 	}
 
+	c.validateProbes(bad)
+
 	ids := map[string]bool{}
 	for i, t := range c.Targets {
 		where := fmt.Sprintf("targets[%d]", i)
@@ -300,6 +433,23 @@ func (c *Config) Validate() error {
 		if t.TTL != 0 && t.IP == "" {
 			bad("%s: ttl needs ip, the address the probe is sent towards", where)
 		}
+		for _, p := range t.Protocols {
+			if p != ProtoICMP && p != ProtoTCP && p != ProtoHTTP {
+				bad("%s: protocol %q is not icmp, tcp or http", where, p)
+			}
+		}
+		if (t.TTL != 0 || t.Auto != "") && (t.Wants(ProtoTCP) || t.Wants(ProtoHTTP)) {
+			bad("%s: ttl and auto targets support only icmp", where)
+		}
+		if t.Wants(ProtoHTTP) && t.Host == "" {
+			bad("%s: http needs host, which is sent as SNI and Host header", where)
+		}
+		if t.Port < 0 || t.Port > 65535 {
+			bad("%s: port %d out of range", where, t.Port)
+		}
+		if t.Path != "" && !strings.HasPrefix(t.Path, "/") {
+			bad("%s: path %q must start with /", where, t.Path)
+		}
 		if t.Interval != 0 && t.Interval < 100*time.Millisecond {
 			bad("%s: interval %v is below 100ms", where, t.Interval)
 		}
@@ -337,6 +487,73 @@ func (c *Config) Validate() error {
 		bad("netwatch.interval must be at least 1s")
 	}
 	return errors.Join(errs...)
+}
+
+func (c *Config) validateProbes(bad func(string, ...any)) {
+	if c.TCP.Interval < time.Second {
+		bad("tcp.interval must be at least 1s")
+	}
+	if c.TCP.Timeout <= 0 || c.TCP.Timeout > 30*time.Second {
+		bad("tcp.timeout must be in (0, 30s]")
+	}
+	if c.TCP.Port < 1 || c.TCP.Port > 65535 {
+		bad("tcp.port %d out of range", c.TCP.Port)
+	}
+	if c.HTTP.Interval < 10*time.Second {
+		bad("http.interval must be at least 10s")
+	}
+	if c.HTTP.Timeout <= 0 || c.HTTP.Timeout > 60*time.Second {
+		bad("http.timeout must be in (0, 60s]")
+	}
+	if c.HTTP.MaxBody < 0 || c.HTTP.MaxBody > MiB {
+		bad("http.max_body must be between 0 and 1MiB")
+	}
+
+	d := c.DNS
+	if !d.Enabled {
+		return
+	}
+	if d.Interval < 5*time.Second {
+		bad("dns.interval must be at least 5s")
+	}
+	if d.Timeout <= 0 || d.Timeout > 30*time.Second {
+		bad("dns.timeout must be in (0, 30s]")
+	}
+	if (d.Local || d.Upstreams) && len(d.Names) == 0 {
+		bad("dns.names is required for the local and upstream layers")
+	}
+	for _, n := range d.Names {
+		if !ValidHost(n) {
+			bad("dns.names: %q is not a valid hostname", n)
+		}
+	}
+	if d.UncachedZone != "" && !ValidHost(d.UncachedZone) {
+		bad("dns.uncached_zone %q is not a valid zone name", d.UncachedZone)
+	}
+	seen := map[string]bool{}
+	for i, s := range d.DoH {
+		where := fmt.Sprintf("dns.doh[%d]", i)
+		if !idPattern.MatchString(s.ID) || seen[s.ID] {
+			bad("%s: id %q must be unique and match %s", where, s.ID, idPattern)
+		}
+		seen[s.ID] = true
+		u, err := url.Parse(s.URL)
+		if err != nil || u.Scheme != "https" || !ValidHost(u.Hostname()) {
+			bad("%s: url %q must be https://<host>/<path>", where, s.URL)
+		}
+		a, err := netip.ParseAddr(s.IP)
+		if err != nil || !UsableAddr(a) {
+			bad("%s: ip %q must be a public IPv4 address", where, s.IP)
+		}
+	}
+	if len(d.Identity.Names) > 0 && d.Identity.Interval < 10*time.Second {
+		bad("dns.identity.interval must be at least 10s")
+	}
+	for _, n := range d.Identity.Names {
+		if !ValidHost(n) {
+			bad("dns.identity.names: %q is not a valid hostname", n)
+		}
+	}
 }
 
 // DeviceFromHostname derives a device ID from a hostname.

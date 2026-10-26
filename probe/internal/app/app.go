@@ -8,7 +8,6 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
-	"math"
 	"net/netip"
 	"os"
 	"runtime"
@@ -88,6 +87,8 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 	defer pinger.Close()
 
 	targets := make([]*target.Target, 0, len(cfg.Targets))
+	// protocols[i] is the configuration of targets[i].
+	protocols := make([]config.Target, 0, len(cfg.Targets))
 	for _, tc := range cfg.Targets {
 		var dst netip.Addr
 		if tc.IP != "" {
@@ -98,6 +99,8 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		t.Host = tc.Host
 		t.TTL = tc.TTL
 		t.Interval = cfg.TargetInterval(tc)
+		t.Port = cfg.TargetPort(tc)
+		t.Path = tc.Path
 		if t.TTL > 0 && pinger.Mode() != icmp.ModeRaw {
 			// Datagram ICMP sockets do not deliver time exceeded errors.
 			log.Warn("TTL-limited target needs a raw ICMP socket; skipping", "target", t.ID, "icmp_mode", pinger.Mode())
@@ -107,6 +110,7 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 			continue
 		}
 		targets = append(targets, t)
+		protocols = append(protocols, tc)
 	}
 
 	nw := netwatch.New(h.FS, h.Interface, targets, rec.Emit, log)
@@ -121,7 +125,21 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 			hostTargets = append(hostTargets, t)
 		}
 	}
+	ua := cfg.HTTP.UserAgent
+	if ua == "" {
+		ua = "heimdall-probe/" + version + " (latency measurement)"
+	}
+	e := &env{cfg: cfg, rec: rec, pinger: pinger, log: log, userAgent: ua}
+	dnsProbes := newDNSProbes(e, h.FS, nw.Allowed)
+	defer dnsProbes.close()
+	// Learn the resolver identity before the first resolution, so that the
+	// initial dst_change events already carry it.
+	for _, l := range dnsProbes.identity {
+		dnsProbes.probeIdentity(ctx, l)
+	}
+
 	res := resolve.New(h.Lookup, nw.Allowed, rec.Emit, log, cfg.Catalog.ResolveTimeout)
+	res.ResolverID = dnsProbes.ResolverID
 	if len(hostTargets) > 0 {
 		start := time.Now()
 		res.RefreshAll(ctx, hostTargets, 4)
@@ -142,35 +160,26 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 			Run:      func(ctx context.Context) { res.Refresh(ctx, t) },
 		})
 	}
-	timeout := cfg.ICMP.Timeout
-	for _, t := range targets {
-		sched.Add(scheduler.Job{
-			Name:        "icmp/" + t.ID,
-			Interval:    t.Interval,
-			Budgeted:    true,
-			MaxInFlight: int(math.Ceil(float64(timeout)/float64(t.Interval))) + 1,
-			Run: func(ctx context.Context) {
-				dst, ok := t.Dst()
-				if !ok {
-					return
-				}
-				r := pinger.Ping(ctx, dst, t.TTL, timeout)
-				if r.Status == "" {
-					return
-				}
-				s := icmpSample(t, dst, r)
-				if t.TTL > 0 && s.Status == sample.StatusOK {
-					if prev, changed := t.ObserveHop(r.From); changed {
-						log.Info("hop changed", "target", t.ID, "ttl", t.TTL, "from", prev, "to", r.From)
-						rec.Emit(sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, TargetID: t.ID,
-							Category: t.Category, Service: t.Service, DstIP: r.From.String(),
-							Extra: map[string]any{"event": "hop_change", "ttl": t.TTL, "via": dst.String(), "prev": prev.String()}})
-					}
-				}
-				rec.Emit(s)
-			},
-		})
+	jobCounts := map[string]int{}
+	for i, t := range targets {
+		tc := protocols[i]
+		if tc.Wants(config.ProtoICMP) {
+			sched.Add(e.icmpJob(t))
+			jobCounts[config.ProtoICMP]++
+		}
+		if tc.Wants(config.ProtoTCP) {
+			sched.Add(e.tcpJob(t))
+			jobCounts[config.ProtoTCP]++
+		}
+		if tc.Wants(config.ProtoHTTP) {
+			sched.Add(e.httpJob(t))
+			jobCounts[config.ProtoHTTP]++
+		}
 	}
+	for _, j := range dnsProbes.jobs() {
+		sched.Add(j)
+	}
+	jobCounts["dns"] = len(dnsProbes.layers) + len(dnsProbes.identity)
 	sched.Add(scheduler.Job{
 		Name:     "netwatch",
 		Interval: cfg.NetWatch.Interval,
@@ -205,6 +214,9 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		"icmp_mode":    string(pinger.Mode()),
 		"targets":      len(targets),
 		"host_targets": len(hostTargets),
+		"jobs":         jobCounts,
+		"dns_layers":   dnsLayerIDs(dnsProbes.layers),
+		"resolver_id":  dnsProbes.ResolverID(),
 		"regions":      cfg.Catalog.Regions,
 		"probe_rate":   cfg.ProbeRate(),
 		"wan_iface":    wan.Iface,
@@ -212,7 +224,8 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		"wan_ipv4":     addrStrings(wan.WANIPv4),
 	}})
 	log.Info("probe started", "device", device, "version", version, "icmp_mode", pinger.Mode(),
-		"targets", len(targets), "probe_rate", cfg.ProbeRate(), "wan_iface", wan.Iface, "gateway", wan.Gateway)
+		"targets", len(targets), "jobs", jobCounts, "probe_rate", cfg.ProbeRate(),
+		"wan_iface", wan.Iface, "gateway", wan.Gateway, "resolver", dnsProbes.ResolverID())
 
 	sched.Run(ctx)
 
@@ -293,6 +306,14 @@ func hopSample(s sample.Sample, t *target.Target, via netip.Addr, r icmp.Result)
 		s.DstIP = ""
 	}
 	return s
+}
+
+func dnsLayerIDs(ls []dnsLayer) []string {
+	out := make([]string, len(ls))
+	for i, l := range ls {
+		out[i] = l.id
+	}
+	return out
 }
 
 func addrString(a netip.Addr) string {

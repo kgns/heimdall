@@ -37,7 +37,10 @@ const (
 	StatusTimeout      Status = "timeout"
 	StatusUnreachable  Status = "unreachable"
 	StatusTimeExceeded Status = "time_exceeded"
-	StatusError        Status = "error"
+	// StatusRefused is a TCP reset in answer to a SYN. The round trip is
+	// still a valid latency measurement.
+	StatusRefused Status = "refused"
+	StatusError   Status = "error"
 )
 
 // Sample is one measurement or observation. RTT is nil when no answer was

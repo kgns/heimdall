@@ -19,6 +19,37 @@ icmp:
   timeout: 2s
   payload_size: 32
 
+tcp:                     # connect, then abort with RST
+  interval: 10s
+  timeout: 3s
+  port: 443
+
+http:                    # one HTTPS GET on a fresh connection, no redirects
+  interval: 60s
+  timeout: 10s
+  max_body: 32KiB
+  user_agent: ""         # default: heimdall-probe/<version> (latency measurement)
+
+# Layered DNS probes. The local and upstream layers are discovered from the
+# running dnsmasq (or resolv.conf without it). uncached_zone needs a
+# wildcard zone; leave it empty until one exists. DoH servers are reached at
+# a fixed IP and compared against the system path. identity names are TXT
+# "whoami" records that reveal which resolver answers for the system path.
+dns:
+  enabled: true
+  interval: 30s
+  timeout: 3s
+  names: [www.google.com, www.wikipedia.org]
+  local: true
+  upstreams: true
+  uncached_zone: ""
+  doh:
+    - {id: google,     url: https://dns.google/dns-query,         ip: 8.8.8.8}
+    - {id: cloudflare, url: https://cloudflare-dns.com/dns-query, ip: 1.1.1.1}
+  identity:
+    interval: 60s
+    names: [whoami.ds.akahelp.net, o-o.myaddr.l.google.com]
+
 # Targets whose route leaves through an interface other than the default
 # route's (for example an operator management VLAN) are never probed.
 #

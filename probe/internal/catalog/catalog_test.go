@@ -100,17 +100,23 @@ services:
 	if len(sel) != 5 {
 		t.Fatalf("disabled service kept: %d", len(sel))
 	}
-	targets := ICMPTargets(sel)
+	targets := Targets(sel)
 	ids := []string{}
 	for _, tg := range targets {
-		ids = append(ids, tg.ID)
+		ids = append(ids, tg.ID+"="+strings.Join(tg.Protocols, "+"))
 	}
-	want := "yt/www.youtube.com gh/github.com dns/1.1.1.1 dns/8.8.8.8 local/tv.example.com local/cdn.example.com"
+	want := "yt/www.youtube.com=icmp+tcp+http gh/github.com=icmp+tcp+http aws/dynamodb.eu-central-1.amazonaws.com=tcp " +
+		"dns/1.1.1.1=icmp+tcp dns/8.8.8.8=icmp+tcp local/tv.example.com=icmp+tcp+http local/cdn.example.com=icmp+tcp+http"
 	if strings.Join(ids, " ") != want {
-		t.Fatalf("targets %q", ids)
+		t.Fatalf("targets\n got %q\nwant %q", strings.Join(ids, " "), want)
 	}
-	if targets[2].IP != "1.1.1.1" || targets[2].Interval.Seconds() != 2 || targets[0].Host != "www.youtube.com" {
+	if targets[3].IP != "1.1.1.1" || targets[3].Interval.Seconds() != 2 || targets[0].Host != "www.youtube.com" {
 		t.Fatalf("target fields %+v", targets)
+	}
+	// Each target gets its own protocol slice.
+	targets[0].Protocols[0] = "changed"
+	if targets[1].Protocols[0] != "icmp" {
+		t.Fatal("protocol slices are shared between targets")
 	}
 
 	if got := Select(all, []string{"streaming"}, nil); len(got) != 2 {

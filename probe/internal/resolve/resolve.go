@@ -44,6 +44,10 @@ type Resolver struct {
 
 	mu     sync.Mutex
 	states map[*target.Target]*state
+
+	// ResolverID, when set, names the upstream resolver currently answering,
+	// so that address changes can be tied to resolver changes.
+	ResolverID func() string
 }
 
 // New returns a resolver. allowed filters addresses the probe may send to;
@@ -129,9 +133,13 @@ func (r *Resolver) Refresh(ctx context.Context, t *target.Target) Result {
 		if cur.IsValid() {
 			x["prev"] = cur.String()
 		}
-		r.log.Info("target address set", "target", t.ID, "host", t.Host, "dst", chosen, "prev", cur)
-		r.emit(sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, TargetID: t.ID,
-			Category: t.Category, Service: t.Service, DstIP: chosen.String(), Extra: x})
+		s := sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, TargetID: t.ID,
+			Category: t.Category, Service: t.Service, DstIP: chosen.String(), Extra: x}
+		if r.ResolverID != nil {
+			s.ResolverID = r.ResolverID()
+		}
+		r.log.Info("target address set", "target", t.ID, "host", t.Host, "dst", chosen, "prev", cur, "resolver", s.ResolverID)
+		r.emit(s)
 	}
 	return res
 }

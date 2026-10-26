@@ -37,6 +37,8 @@ output:
   stdout: true
   jsonl:
     max_file_size: 1MiB
+dns:
+  enabled: false
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -91,6 +93,18 @@ func TestParseRejects(t *testing.T) {
 		"single label":  "targets:\n  - {id: a, category: c, service: s, host: localhost}\n",
 		"region name":   "catalog:\n  regions: ['../etc']\n",
 		"resolve fast":  "catalog:\n  resolve_interval: 1s\n",
+		"bad protocol":  "targets:\n  - {id: a, category: c, service: s, ip: 1.1.1.1, protocols: [quic]}\n",
+		"http on ip":    "targets:\n  - {id: a, category: c, service: s, ip: 1.1.1.1, protocols: [http]}\n",
+		"tcp on hop":    "targets:\n  - {id: a, category: c, service: s, ip: 1.1.1.1, ttl: 1, protocols: [tcp]}\n",
+		"bad path":      "targets:\n  - {id: a, category: c, service: s, host: a.example.com, protocols: [http], path: health}\n",
+		"doh http":      "dns:\n  doh: [{id: x, url: 'http://dns.example.com/q', ip: 8.8.8.8}]\n",
+		"doh private":   "dns:\n  doh: [{id: x, url: 'https://dns.example.com/q', ip: 10.0.0.1}]\n",
+		"doh dup":       "dns:\n  doh: [{id: x, url: 'https://a.example.com/q', ip: 8.8.8.8}, {id: x, url: 'https://b.example.com/q', ip: 1.1.1.1}]\n",
+		"dns names":     "dns:\n  names: ['bad name']\n",
+		"dns fast":      "dns:\n  interval: 1s\n",
+		"zone":          "dns:\n  uncached_zone: 'not a zone'\n",
+		"http fast":     "http:\n  interval: 1s\n",
+		"tcp port":      "tcp:\n  port: 0\n",
 		"jsonl dir":     "output:\n  jsonl:\n    dir: ''\n",
 		"nice":          "runtime:\n  nice: 25\n",
 	}
@@ -119,6 +133,27 @@ func TestLoadFile(t *testing.T) {
 	_, err := Load(p, false)
 	if err == nil || !strings.Contains(err.Error(), p) {
 		t.Fatalf("err %v", err)
+	}
+}
+
+func TestProtocolsAndRate(t *testing.T) {
+	c, err := Parse([]byte(`
+targets:
+  - {id: a, category: c, service: s, host: www.example.com, protocols: [icmp, tcp, http], port: 8443, path: /health}
+  - {id: b, category: c, service: s, ip: 1.1.1.1, protocols: [tcp]}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := c.Targets[0], c.Targets[1]
+	if !a.Wants(ProtoHTTP) || b.Wants(ProtoICMP) || c.TargetPort(a) != 8443 || c.TargetPort(b) != 443 {
+		t.Fatalf("%+v %+v", a, b)
+	}
+	// icmp 1/s + two tcp at 1/10s + one http at 1/60s, plus DNS: five
+	// layers at 1/30s and two identity names at 1/60s.
+	want := 1 + 0.2 + 1.0/60 + 5.0/30 + 2.0/60
+	if r := c.ProbeRate(); r < want-1e-9 || r > want+1e-9 {
+		t.Fatalf("rate %v, want %v", r, want)
 	}
 }
 

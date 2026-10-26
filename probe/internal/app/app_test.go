@@ -132,6 +132,7 @@ func testHost(t *testing.T, conn icmp.Conn, mem *sample.MemorySink) Host {
 
 func TestRunEmitsSamples(t *testing.T) {
 	cfg := config.Default()
+	cfg.DNS.Enabled = false
 	cfg.Output.JSONL.Dir = t.TempDir()
 	cfg.ICMP.Interval = 100 * time.Millisecond
 	cfg.ICMP.Timeout = 150 * time.Millisecond
@@ -236,6 +237,7 @@ func TestRunEmitsSamples(t *testing.T) {
 
 func TestRunSkipsTTLTargetsWithoutRawSocket(t *testing.T) {
 	cfg := config.Default()
+	cfg.DNS.Enabled = false
 	cfg.Output.JSONL.Enabled = false
 	cfg.ICMP.Interval = 100 * time.Millisecond
 	cfg.Targets = []config.Target{
@@ -271,6 +273,7 @@ func TestRunSkipsTTLTargetsWithoutRawSocket(t *testing.T) {
 
 func TestRunShutdownWithInFlightProbes(t *testing.T) {
 	cfg := config.Default()
+	cfg.DNS.Enabled = false
 	cfg.Output.JSONL.Enabled = false
 	cfg.ICMP.Interval = 100 * time.Millisecond
 	cfg.ICMP.Timeout = 10 * time.Second
