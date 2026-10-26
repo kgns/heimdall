@@ -152,13 +152,15 @@ func (u *Uploader) Run(ctx context.Context) {
 		case <-timer.C:
 		}
 		next := u.opt.Interval
-		sent, err := u.sendOnce(ctx)
+		// Stopping must not abort a request the server may already have
+		// stored: the batch would stay buffered and drain would send it
+		// twice. The request is still bounded by Options.Timeout.
+		sent, err := u.sendOnce(context.WithoutCancel(ctx))
 		switch {
 		case err != nil:
-			backoff = nextBackoff(backoff, u.opt.MinBackoff, u.opt.MaxBackoff)
-			next = backoff
+			backoff, next = nextBackoff(backoff, u.opt.MinBackoff, u.opt.MaxBackoff)
 			u.mu.Lock()
-			u.st.Backoff = backoff.Round(time.Second).String()
+			u.st.Backoff = next.Round(time.Second).String()
 			u.mu.Unlock()
 		default:
 			backoff = 0
@@ -189,17 +191,20 @@ func (u *Uploader) drain() {
 	}
 }
 
-func nextBackoff(cur, lo, hi time.Duration) time.Duration {
-	if cur < lo {
-		cur = lo
+// nextBackoff doubles base within [lo, hi] and returns the new base plus the
+// wait to use. The wait is jittered and the base is not, so the jitter does
+// not feed back into the next step.
+func nextBackoff(base, lo, hi time.Duration) (time.Duration, time.Duration) {
+	if base < lo {
+		base = lo
 	} else {
-		cur *= 2
+		base *= 2
 	}
-	if cur > hi {
-		cur = hi
+	if base > hi {
+		base = hi
 	}
-	// Full jitter in [cur/2, cur) keeps many probes from retrying in step.
-	return cur/2 + time.Duration(rand.Int64N(int64(cur/2)+1))
+	// Jitter in [base/2, base] keeps many probes from retrying in step.
+	return base, base/2 + time.Duration(rand.Int64N(int64(base/2)+1))
 }
 
 // sendOnce uploads one batch and returns how many samples it carried.

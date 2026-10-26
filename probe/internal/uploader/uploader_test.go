@@ -325,11 +325,16 @@ func TestNewValidates(t *testing.T) {
 }
 
 func TestBackoff(t *testing.T) {
-	b := time.Duration(0)
-	for range 20 {
-		b = nextBackoff(b, time.Second, time.Minute)
-		if b < 500*time.Millisecond || b > time.Minute {
-			t.Fatalf("backoff %v out of range", b)
+	var base, wait time.Duration
+	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second,
+		16 * time.Second, 32 * time.Second, time.Minute, time.Minute}
+	for i, w := range want {
+		base, wait = nextBackoff(base, time.Second, time.Minute)
+		if base != w {
+			t.Fatalf("step %d: base %v, want %v", i, base, w)
+		}
+		if wait < base/2 || wait > base {
+			t.Fatalf("step %d: wait %v outside [%v, %v]", i, wait, base/2, base)
 		}
 	}
 }
