@@ -5,7 +5,7 @@ BIN_DIR   := $(CURDIR)/bin
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS   := -s -w -X main.version=$(VERSION)
 GOBUILD   := CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)"
-CMDS      := heimdall-probe
+CMDS      := heimdall-probe heimdall-reflector
 STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.2
 
 .PHONY: all build build-armv7 build-arm64 build-host test lint fmt clean

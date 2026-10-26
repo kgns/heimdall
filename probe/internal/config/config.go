@@ -31,6 +31,7 @@ type Config struct {
 	ICMP        ICMP        `yaml:"icmp"`
 	TCP         TCP         `yaml:"tcp"`
 	HTTP        HTTP        `yaml:"http"`
+	STAMP       STAMP       `yaml:"stamp"`
 	DNS         DNS         `yaml:"dns"`
 	Targets     []Target    `yaml:"targets"`
 	Catalog     Catalog     `yaml:"catalog"`
@@ -151,11 +152,13 @@ type Target struct {
 	Path string `yaml:"path"`
 }
 
-// Protocol names.
+// Protocol names. stamp needs a STAMP reflector (heimdall-reflector) at
+// the target's address.
 const (
-	ProtoICMP = "icmp"
-	ProtoTCP  = "tcp"
-	ProtoHTTP = "http"
+	ProtoICMP  = "icmp"
+	ProtoTCP   = "tcp"
+	ProtoHTTP  = "http"
+	ProtoSTAMP = "stamp"
 )
 
 // Wants reports whether t is measured with protocol p.
@@ -173,6 +176,14 @@ func (t Target) Wants(p string) bool {
 
 // TCP configures TCP connect probes.
 type TCP struct {
+	Interval time.Duration `yaml:"interval"`
+	Timeout  time.Duration `yaml:"timeout"`
+	Port     int           `yaml:"port"`
+}
+
+// STAMP configures two-way UDP test packets (RFC 8762) towards a
+// reflector, which give one-way delays and the direction of loss.
+type STAMP struct {
 	Interval time.Duration `yaml:"interval"`
 	Timeout  time.Duration `yaml:"timeout"`
 	Port     int           `yaml:"port"`
@@ -214,10 +225,15 @@ type DoHServer struct {
 }
 
 // Identity configures resolver identification through whoami TXT names,
-// resolved through the local forwarder.
+// resolved through the local forwarder. Zone is a whoami zone that answers
+// for any name (heimdall-reflector serves one); a random label under it is
+// queried each time, so no cache can answer and every reply is current.
+// Fixed names can be served from a cache and count only when the answer
+// was evidently fetched upstream.
 type Identity struct {
 	Interval time.Duration `yaml:"interval"`
 	Names    []string      `yaml:"names"`
+	Zone     string        `yaml:"zone"`
 }
 
 // Catalog points at the service catalog and selects what to load from it.
@@ -273,6 +289,7 @@ func Default() Config {
 		ICMP:      ICMP{Mode: "auto", Interval: time.Second, Timeout: 2 * time.Second, PayloadSize: 32},
 		TCP:       TCP{Interval: 10 * time.Second, Timeout: 3 * time.Second, Port: 443},
 		HTTP:      HTTP{Interval: time.Minute, Timeout: 10 * time.Second, MaxBody: 32 * KiB},
+		STAMP:     STAMP{Interval: time.Second, Timeout: 2 * time.Second, Port: 862},
 		DNS: DNS{
 			Enabled: true, Interval: 30 * time.Second, Timeout: 3 * time.Second,
 			Names: []string{"www.google.com", "www.wikipedia.org"},
@@ -388,6 +405,9 @@ func (c *Config) ProbeRate() float64 {
 		if t.Wants(ProtoHTTP) && c.HTTP.Interval > 0 {
 			r += 1 / c.HTTP.Interval.Seconds()
 		}
+		if t.Wants(ProtoSTAMP) && c.STAMP.Interval > 0 {
+			r += 1 / c.STAMP.Interval.Seconds()
+		}
 	}
 	if d := c.DNS; d.Enabled && d.Interval > 0 {
 		layers := len(d.DoH)
@@ -402,7 +422,11 @@ func (c *Config) ProbeRate() float64 {
 		}
 		r += float64(layers) / d.Interval.Seconds()
 		if d.Identity.Interval > 0 {
-			r += float64(len(d.Identity.Names)) / d.Identity.Interval.Seconds()
+			n := len(d.Identity.Names)
+			if d.Identity.Zone != "" {
+				n++
+			}
+			r += float64(n) / d.Identity.Interval.Seconds()
 		}
 	}
 	// LAN pings are counted at the worst case of max_clients.
@@ -522,11 +546,11 @@ func (c *Config) Validate() error {
 			bad("%s: ttl needs ip, the address the probe is sent towards", where)
 		}
 		for _, p := range t.Protocols {
-			if p != ProtoICMP && p != ProtoTCP && p != ProtoHTTP {
-				bad("%s: protocol %q is not icmp, tcp or http", where, p)
+			if p != ProtoICMP && p != ProtoTCP && p != ProtoHTTP && p != ProtoSTAMP {
+				bad("%s: protocol %q is not icmp, tcp, http or stamp", where, p)
 			}
 		}
-		if (t.TTL != 0 || t.Auto != "") && (t.Wants(ProtoTCP) || t.Wants(ProtoHTTP)) {
+		if (t.TTL != 0 || t.Auto != "") && (t.Wants(ProtoTCP) || t.Wants(ProtoHTTP) || t.Wants(ProtoSTAMP)) {
 			bad("%s: ttl and auto targets support only icmp", where)
 		}
 		if t.Wants(ProtoHTTP) && t.Host == "" {
@@ -598,6 +622,15 @@ func (c *Config) validateProbes(bad func(string, ...any)) {
 	if c.HTTP.MaxBody < 0 || c.HTTP.MaxBody > MiB {
 		bad("http.max_body must be between 0 and 1MiB")
 	}
+	if c.STAMP.Interval < 100*time.Millisecond {
+		bad("stamp.interval must be at least 100ms")
+	}
+	if c.STAMP.Timeout <= 0 || c.STAMP.Timeout > 30*time.Second {
+		bad("stamp.timeout must be in (0, 30s]")
+	}
+	if c.STAMP.Port < 1 || c.STAMP.Port > 65535 {
+		bad("stamp.port %d out of range", c.STAMP.Port)
+	}
 
 	d := c.DNS
 	if !d.Enabled {
@@ -636,8 +669,11 @@ func (c *Config) validateProbes(bad func(string, ...any)) {
 			bad("%s: ip %q must be a public IPv4 address", where, s.IP)
 		}
 	}
-	if len(d.Identity.Names) > 0 && d.Identity.Interval < 10*time.Second {
+	if (len(d.Identity.Names) > 0 || d.Identity.Zone != "") && d.Identity.Interval < 10*time.Second {
 		bad("dns.identity.interval must be at least 10s")
+	}
+	if d.Identity.Zone != "" && !ValidHost(d.Identity.Zone) {
+		bad("dns.identity.zone %q is not a valid zone name", d.Identity.Zone)
 	}
 	for _, n := range d.Identity.Names {
 		if !ValidHost(n) {

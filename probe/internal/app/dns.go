@@ -47,6 +47,10 @@ type dnsProbes struct {
 	identity []dnsLayer
 	doh      []*dnsp.DoH
 
+	// identityZone is set when a random-label whoami zone is configured;
+	// only its answers then set the resolver identity.
+	identityZone bool
+
 	resolverID atomic.Pointer[string]
 	mu         sync.Mutex
 	names      map[string]int
@@ -106,6 +110,12 @@ func newDNSProbes(e *env, fsys fs.FS, allowed func(netip.Addr) bool) *dnsProbes 
 		}
 		d.doh = append(d.doh, cl)
 		d.layers = append(d.layers, dnsLayer{id: "dns/doh/" + s.ID, layer: layerDoH, server: ap, ex: cl})
+	}
+	if len(entry) > 0 && c.Identity.Zone != "" {
+		l := entry[0]
+		l.id, l.layer, l.random = "dns/identity/"+c.Identity.Zone, layerIdentity, c.Identity.Zone
+		d.identity = append(d.identity, l)
+		d.identityZone = true
 	}
 	if len(entry) > 0 {
 		for _, n := range c.Identity.Names {
@@ -181,6 +191,9 @@ func (d *dnsProbes) probe(ctx context.Context, l dnsLayer) {
 
 func (d *dnsProbes) probeIdentity(ctx context.Context, l dnsLayer) {
 	name := l.id[len("dns/identity/"):]
+	if l.random != "" {
+		name = randomLabel() + "." + l.random
+	}
 	r := dnsp.Query(ctx, l.ex, name, dns.TypeTXT, d.cfg.DNS.Timeout)
 	if ctx.Err() != nil {
 		return
@@ -196,11 +209,12 @@ func (d *dnsProbes) probeIdentity(ctx context.Context, l dnsLayer) {
 			// A cached answer names whichever resolver filled the cache,
 			// possibly long ago (dnscrypt-proxy keeps answers for at least
 			// cache_min_ttl, 40 minutes by default), so only answers that
-			// came from upstream update the current identity.
-			fresh := r.RTT >= freshIdentityRTT
+			// came from upstream update the current identity. Random
+			// labels are never cached.
+			fresh := l.random != "" || r.RTT >= freshIdentityRTT
 			s.Extra["fresh"] = fresh
-			if fresh {
-				d.setResolver(id.Resolver.String(), name)
+			if fresh && (l.random != "" || !d.identityZone) {
+				d.setResolver(id.Resolver.String(), l.id[len("dns/identity/"):])
 			}
 		}
 	}

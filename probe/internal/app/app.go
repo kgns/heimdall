@@ -195,6 +195,8 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		})
 	}
 	jobCounts := map[string]int{}
+	stampers := &stampSenders{}
+	defer stampers.close()
 	for i, t := range targets {
 		tc := protocols[i]
 		if tc.Wants(config.ProtoICMP) {
@@ -208,6 +210,10 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		if tc.Wants(config.ProtoHTTP) {
 			sched.Add(e.httpJob(t))
 			jobCounts[config.ProtoHTTP]++
+		}
+		if tc.Wants(config.ProtoSTAMP) {
+			sched.Add(e.stampJob(t, stampers))
+			jobCounts[config.ProtoSTAMP]++
 		}
 	}
 	for _, j := range dnsProbes.jobs() {

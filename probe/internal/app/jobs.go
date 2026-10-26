@@ -5,11 +5,14 @@ import (
 	"log/slog"
 	"math"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/kgns/heimdall/probe/internal/config"
 	"github.com/kgns/heimdall/probe/internal/probes/httpp"
 	"github.com/kgns/heimdall/probe/internal/probes/icmp"
+	"github.com/kgns/heimdall/probe/internal/probes/neterr"
+	"github.com/kgns/heimdall/probe/internal/probes/stamp"
 	"github.com/kgns/heimdall/probe/internal/probes/tcpp"
 	"github.com/kgns/heimdall/probe/internal/sample"
 	"github.com/kgns/heimdall/probe/internal/scheduler"
@@ -88,6 +91,110 @@ func (e *env) tcpJob(t *target.Target) scheduler.Job {
 			e.rec.Emit(s)
 		},
 	}
+}
+
+// stampSenders holds one STAMP sender per target, re-dialled when the
+// target's address changes.
+type stampSenders struct {
+	mu   sync.Mutex
+	byID map[string]*stampSender
+}
+
+type stampSender struct {
+	dst netip.AddrPort
+	s   *stamp.Sender
+}
+
+func (ss *stampSenders) get(id string, dst netip.AddrPort) (*stamp.Sender, error) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if cur := ss.byID[id]; cur != nil {
+		if cur.dst == dst {
+			return cur.s, nil
+		}
+		cur.s.Close()
+		delete(ss.byID, id)
+	}
+	s, err := stamp.Dial(dst)
+	if err != nil {
+		return nil, err
+	}
+	if ss.byID == nil {
+		ss.byID = map[string]*stampSender{}
+	}
+	ss.byID[id] = &stampSender{dst: dst, s: s}
+	return s, nil
+}
+
+func (ss *stampSenders) close() {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	for id, cur := range ss.byID {
+		cur.s.Close()
+		delete(ss.byID, id)
+	}
+}
+
+func (e *env) stampJob(t *target.Target, ss *stampSenders) scheduler.Job {
+	c := e.cfg.STAMP
+	return scheduler.Job{
+		Name:        "stamp/" + t.ID,
+		Interval:    c.Interval,
+		Budgeted:    true,
+		MaxInFlight: maxInFlight(c.Timeout, c.Interval),
+		Run: func(ctx context.Context) {
+			dst, ok := t.Dst()
+			if !ok {
+				return
+			}
+			ap := netip.AddrPortFrom(dst, uint16(c.Port))
+			s := sample.Sample{
+				Kind: sample.KindUDPEcho, Category: t.Category, Service: t.Service,
+				TargetID: t.ID, DstIP: dst.String(), DstPort: c.Port,
+			}
+			snd, err := ss.get(t.ID, ap)
+			if err != nil {
+				s.TS = time.Now().UnixMilli()
+				s.Status, _ = neterr.Classify(err)
+				s.Extra = map[string]any{"proto": "stamp", "error": err.Error()}
+				e.rec.Emit(s)
+				return
+			}
+			r := snd.Probe(ctx, c.Timeout)
+			if r.Status == "" {
+				return
+			}
+			e.rec.Emit(stampSample(s, r))
+		},
+	}
+}
+
+// stampSample reports the round trip without the reflector's turnaround
+// as the RTT. The one-way delays depend on the offset between the two
+// clocks and are kept in extra for correction downstream.
+func stampSample(s sample.Sample, r stamp.Result) sample.Sample {
+	s.TS = r.Sent.UnixMilli()
+	s.Status = r.Status
+	x := map[string]any{"proto": "stamp", "seq": r.Seq}
+	if r.Status == sample.StatusOK {
+		s.RTTms = sample.RTT(r.RTT - r.Proc)
+		x["refl_seq"] = r.ReflSeq
+		x["fwd_ms"] = sample.Millis(r.Fwd)
+		x["rev_ms"] = sample.Millis(r.Rev)
+		x["proc_ms"] = sample.Millis(r.Proc)
+		x["refl_synced"] = r.ReflSynced
+		if r.ArrivalTTL > 0 {
+			x["fwd_hops"] = r.FwdHops
+		}
+		if r.LossKnown {
+			x["lost_up"] = r.LostUp
+			x["lost_down"] = r.LostDown
+		}
+	} else {
+		x["reason"] = r.Reason
+	}
+	s.Extra = x
+	return s
 }
 
 func (e *env) httpJob(t *target.Target) scheduler.Job {

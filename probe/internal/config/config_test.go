@@ -102,6 +102,9 @@ func TestParseRejects(t *testing.T) {
 		"bad protocol":  "targets:\n  - {id: a, category: c, service: s, ip: 1.1.1.1, protocols: [quic]}\n",
 		"http on ip":    "targets:\n  - {id: a, category: c, service: s, ip: 1.1.1.1, protocols: [http]}\n",
 		"tcp on hop":    "targets:\n  - {id: a, category: c, service: s, ip: 1.1.1.1, ttl: 1, protocols: [tcp]}\n",
+		"stamp on hop":  "targets:\n  - {id: a, category: c, service: s, ip: 1.1.1.1, ttl: 1, protocols: [stamp]}\n",
+		"stamp fast":    "stamp: {interval: 10ms}\n",
+		"bad id zone":   "dns: {identity: {zone: \"not a zone\"}}\n",
 		"bad path":      "targets:\n  - {id: a, category: c, service: s, host: a.example.com, protocols: [http], path: health}\n",
 		"doh http":      "dns:\n  doh: [{id: x, url: 'http://dns.example.com/q', ip: 8.8.8.8}]\n",
 		"doh private":   "dns:\n  doh: [{id: x, url: 'https://dns.example.com/q', ip: 10.0.0.1}]\n",
@@ -169,6 +172,21 @@ targets:
 	// at 1/5s and the clock check at 1/60s.
 	want := 1 + 0.2 + 1.0/60 + 5.0/30 + 2.0/60 + 32.0/5 + 1.0/60
 	if r := c.ProbeRate(); r < want-1e-9 || r > want+1e-9 {
+		t.Fatalf("rate %v, want %v", r, want)
+	}
+
+	// A STAMP target at 5/s and a whoami zone add to the rate.
+	c, err = Parse([]byte(`
+stamp: {interval: 200ms}
+dns: {identity: {zone: w.example.net}}
+targets:
+  - {id: r, category: infra, service: reflector, host: reflector.example.net, protocols: [icmp, stamp]}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = 1 + 5 + 5.0/30 + 3.0/60 + 32.0/5 + 1.0/60
+	if r := c.ProbeRate(); r < want-1e-9 || r > want+1e-9 || !c.Targets[0].Wants(ProtoSTAMP) {
 		t.Fatalf("rate %v, want %v", r, want)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/fstest"
@@ -15,8 +16,10 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/kgns/heimdall/probe/internal/config"
+	"github.com/kgns/heimdall/probe/internal/probes/stamp"
 	"github.com/kgns/heimdall/probe/internal/sample"
 	"github.com/kgns/heimdall/probe/internal/target"
+	"github.com/kgns/heimdall/probe/internal/whoami"
 )
 
 func testEnv(t *testing.T, cfg config.Config) (*env, *sample.MemorySink) {
@@ -201,6 +204,108 @@ func TestDNSProbes(t *testing.T) {
 	}
 	if qnames[2] == qnames[5] || len(qnames[2]) < len("uncached:.probe.example.com")+16 {
 		t.Fatalf("uncached names not random: %v", qnames)
+	}
+}
+
+func TestDNSIdentityZone(t *testing.T) {
+	zone := whoami.New("w.example.net", "ns.example.net", "hostmaster.example.net")
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &dns.Server{PacketConn: pc, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
+		if dns.IsSubDomain("w.example.net.", q.Question[0].Name) {
+			zone.ServeDNS(w, q)
+			return
+		}
+		time.Sleep(freshIdentityRTT + 5*time.Millisecond)
+		m := new(dns.Msg)
+		m.SetReply(q)
+		m.Answer = append(m.Answer, &dns.TXT{Hdr: dns.RR_Header{Name: q.Question[0].Name, Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 60}, Txt: []string{"203.0.113.7"}})
+		w.WriteMsg(m)
+	})}
+	go srv.ActivateAndServe()
+	defer srv.Shutdown()
+	port := pc.LocalAddr().(*net.UDPAddr).Port
+	fsys := fstest.MapFS{"etc/dnsmasq.conf": {Data: []byte(fmt.Sprintf("port=%d\nno-resolv\n", port))}}
+
+	cfg := config.Default()
+	cfg.DNS.DoH = nil
+	cfg.DNS.Identity.Names = []string{"o-o.myaddr.l.google.com"}
+	cfg.DNS.Identity.Zone = "w.example.net"
+	e, mem := testEnv(t, cfg)
+	d := newDNSProbes(e, fsys, func(netip.Addr) bool { return true })
+	defer d.close()
+	if len(d.identity) != 2 || d.identity[0].id != "dns/identity/w.example.net" {
+		t.Fatalf("identity layers %+v", d.identity)
+	}
+	for range 2 {
+		d.probeIdentity(context.Background(), d.identity[0])
+	}
+	if d.ResolverID() != "127.0.0.1" {
+		t.Fatalf("resolver %q", d.ResolverID())
+	}
+	// A fresh answer for a fixed name is recorded but the zone decides.
+	d.probeIdentity(context.Background(), d.identity[1])
+	if d.ResolverID() != "127.0.0.1" {
+		t.Fatalf("fixed name overrode the zone: %q", d.ResolverID())
+	}
+	var qnames []string
+	for _, s := range mem.Samples() {
+		if s.Kind == sample.KindDNS {
+			qnames = append(qnames, s.Extra["qname"].(string))
+			if s.Extra["layer"] != layerIdentity || s.Extra["fresh"] != true {
+				t.Fatalf("%+v", s)
+			}
+		}
+	}
+	if len(qnames) != 3 || qnames[0] == qnames[1] || !strings.HasSuffix(qnames[0], ".w.example.net") ||
+		qnames[2] != "o-o.myaddr.l.google.com" {
+		t.Fatalf("qnames %v", qnames)
+	}
+}
+
+func TestSTAMPJob(t *testing.T) {
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go stamp.NewReflector().Serve(ctx, pc)
+
+	cfg := config.Default()
+	cfg.STAMP.Port = pc.LocalAddr().(*net.UDPAddr).Port
+	cfg.STAMP.Timeout = time.Second
+	e, mem := testEnv(t, cfg)
+	ss := &stampSenders{}
+	defer ss.close()
+	tg := target.New("aws-reflector", "infra", "aws-reflector", netip.MustParseAddr("127.0.0.1"))
+	job := e.stampJob(tg, ss)
+	for range 3 {
+		job.Run(context.Background())
+	}
+	got := mem.Samples()
+	if len(got) != 3 {
+		t.Fatalf("%+v", got)
+	}
+	for i, s := range got {
+		if s.Kind != sample.KindUDPEcho || s.Status != sample.StatusOK || s.RTTms == nil || s.DstPort != cfg.STAMP.Port ||
+			s.Extra["proto"] != "stamp" || s.Extra["refl_seq"] != uint32(i) || s.Extra["fwd_hops"] != 0 {
+			t.Fatalf("sample %d: %+v", i, s)
+		}
+	}
+	if got[0].Extra["lost_up"] != nil || got[2].Extra["lost_up"] != 0 || got[2].Extra["lost_down"] != 0 {
+		t.Fatalf("loss fields %+v %+v", got[0].Extra, got[2].Extra)
+	}
+
+	// No reflector: the probe times out and says so.
+	cfg.STAMP.Port = cfg.STAMP.Port + 1
+	cfg.STAMP.Timeout = 50 * time.Millisecond
+	e2, mem2 := testEnv(t, cfg)
+	e2.stampJob(tg, ss).Run(context.Background())
+	if s := mem2.Samples()[0]; s.Status != sample.StatusTimeout || s.RTTms != nil || s.Extra["reason"] != "timeout" {
+		t.Fatalf("%+v", s)
 	}
 }
 
