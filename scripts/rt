@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Router helper for the heimdall prototype. All access goes through one SSH
+# control socket that the operator opens with `rt connect` (interactive
+# login) and closes with `rt disconnect`; every other command fails fast
+# when the socket is not open.
+set -euo pipefail
+
+ROUTER="${HEIMDALL_ROUTER:-root@192.168.1.1}"
+SOCK="${HEIMDALL_SSH_SOCK:-$HOME/.ssh/heimdall-router.sock}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ARCH="${HEIMDALL_ARCH:-arm64}"
+REMOTE=/misc/heimdall
+SAMPLES=/var/tmp/heimdall
+LOG=/var/tmp/heimdall-run.log
+PID=/var/tmp/heimdall.pid
+FETCH_DIR="${HEIMDALL_FETCH_DIR:-/tmp/heimdall-samples}"
+
+r() { ssh -o ControlPath="$SOCK" -o BatchMode=yes -o ConnectTimeout=5 "$ROUTER" "$@"; }
+
+need_socket() {
+	if ! ssh -o ControlPath="$SOCK" -O check "$ROUTER" 2>/dev/null; then
+		echo "no open router session; run: $0 connect" >&2
+		exit 1
+	fi
+}
+
+usage() {
+	cat <<EOF
+usage: $(basename "$0") <command>
+
+  connect             open the shared SSH session (asks for the router login)
+  disconnect          close it
+  deploy              copy binary ($ARCH), config, catalog and scripts
+  start | stop        start or stop the probe
+  restart             stop, clear samples, start
+  status              version, process state and the last log lines
+  run <seconds>       restart, wait, stop
+  fetch               copy samples and log to $FETCH_DIR
+  sh '<command>'      run a read-only command on the router
+EOF
+}
+
+cmd="${1:-}"
+shift || true
+case "$cmd" in
+connect)
+	mkdir -p "$(dirname "$SOCK")"
+	ssh -M -S "$SOCK" -o ControlPersist=yes -o ServerAliveInterval=30 -fN "$ROUTER"
+	echo "session open ($SOCK)"
+	;;
+disconnect)
+	ssh -S "$SOCK" -O exit "$ROUTER" 2>/dev/null || true
+	;;
+deploy)
+	need_socket
+	bin="$ROOT/bin/linux-$ARCH/heimdall-probe"
+	[ -x "$bin" ] || { echo "missing $bin; run make build-$ARCH" >&2; exit 1; }
+	r "mkdir -p $REMOTE/catalog $REMOTE/scripts"
+	r "cat > $REMOTE/heimdall-probe.new && chmod 755 $REMOTE/heimdall-probe.new" < "$bin"
+	r "cat > $REMOTE/config.yaml" < "$ROOT/configs/router.example.yaml"
+	tar -C "$ROOT/catalog" -cf - . | r "tar -C $REMOTE/catalog -xf -"
+	tar -C "$ROOT/scripts/router" -cf - . | r "tar -C $REMOTE/scripts -xf -"
+	r "mv $REMOTE/heimdall-probe.new $REMOTE/heimdall-probe && $REMOTE/heimdall-probe version"
+	;;
+start)
+	need_socket
+	r "cd $REMOTE && if [ -f $PID ] && kill -0 \$(cat $PID) 2>/dev/null; then echo already running; else ./heimdall-probe run -config config.yaml > $LOG 2>&1 < /dev/null & echo \$! > $PID; sleep 2; tail -3 $LOG; fi"
+	;;
+stop)
+	need_socket
+	r "if [ -f $PID ] && kill \$(cat $PID) 2>/dev/null; then sleep 1; tail -1 $LOG; else echo not running; fi; rm -f $PID"
+	;;
+restart)
+	"$0" stop
+	r "rm -f $SAMPLES/samples.jsonl*"
+	"$0" start
+	;;
+status)
+	need_socket
+	r "cd $REMOTE && ./heimdall-probe version; if [ -f $PID ] && kill -0 \$(cat $PID) 2>/dev/null; then echo running pid \$(cat $PID); else echo stopped; fi; tail -5 $LOG 2>/dev/null; ls -l $SAMPLES 2>/dev/null"
+	;;
+run)
+	secs="${1:?seconds}"
+	"$0" restart
+	sleep "$secs"
+	"$0" stop
+	;;
+fetch)
+	need_socket
+	rm -rf "$FETCH_DIR" && mkdir -p "$FETCH_DIR"
+	r "cd $SAMPLES && tar -cf - samples.jsonl* -C /var/tmp heimdall-run.log 2>/dev/null" | tar -C "$FETCH_DIR" -xf -
+	ls -l "$FETCH_DIR"
+	;;
+sh)
+	need_socket
+	r "$@"
+	;;
+*)
+	usage
+	[ -z "$cmd" ] || exit 2
+	;;
+esac
