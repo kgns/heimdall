@@ -138,6 +138,11 @@ data "aws_iam_policy_document" "analytics" {
     resources = ["${aws_s3_bucket.raw.arn}/derived/*"]
   }
   statement {
+    sid       = "StartReport"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.report.arn]
+  }
+  statement {
     sid       = "QueryResults"
     actions   = ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"]
     resources = ["${aws_s3_bucket.athena.arn}/results/*"]
@@ -168,11 +173,12 @@ resource "aws_lambda_function" "analytics" {
 
   environment {
     variables = {
-      WORKGROUP      = aws_athena_workgroup.this.name
-      BUCKET         = aws_s3_bucket.raw.bucket
-      CONTROL_DEVICE = local.cloud_device
-      HOME_ASN       = jsonencode(local.home_asn)
-      COUNTRY        = "TR"
+      WORKGROUP       = aws_athena_workgroup.this.name
+      BUCKET          = aws_s3_bucket.raw.bucket
+      CONTROL_DEVICE  = local.cloud_device
+      HOME_ASN        = jsonencode(local.home_asn)
+      COUNTRY         = "TR"
+      REPORT_FUNCTION = aws_lambda_function.report.function_name
     }
   }
 
@@ -215,4 +221,9 @@ resource "aws_lambda_invocation" "analytics_backfill" {
   for_each      = toset(var.analytics_backfill)
   function_name = aws_lambda_function.analytics.function_name
   input         = jsonencode({ date = each.value })
+  # A new version of the analysis reruns the listed days.
+  triggers = {
+    code = data.archive_file.ingest.output_base64sha256
+  }
+  depends_on = [aws_lambda_function.report]
 }

@@ -536,11 +536,20 @@ def run(
     return {"day": day.isoformat(), **counts}
 
 
+def start_report(day: date, function: str) -> None:
+    """Start the report Lambda for day without waiting for it."""
+    import boto3
+
+    boto3.client("lambda").invoke(
+        FunctionName=function, InvocationType="Event", Payload=json.dumps({"date": day.isoformat()}).encode()
+    )
+
+
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     import boto3
 
     day = date.fromisoformat(event["date"]) if event.get("date") else (datetime.now(UTC) - timedelta(days=1)).date()
-    return run(
+    result = run(
         day,
         Athena(boto3.client("athena"), os.environ["WORKGROUP"]),
         Store(boto3.client("s3"), os.environ["BUCKET"]),
@@ -549,3 +558,6 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         home_asn=json.loads(os.environ.get("HOME_ASN", "{}")),
         country=os.environ.get("COUNTRY", "TR"),
     )
+    if (fn := os.environ.get("REPORT_FUNCTION")) and event.get("report", True):
+        start_report(day, fn)
+    return result

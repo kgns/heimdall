@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Print the daily report of a device (default: yesterday, UTC).
+#   scripts/report [device] [YYYY-MM-DD]
+set -euo pipefail
+device="${1:-ex7501-home}"
+day="${2:-$(date -u -d yesterday +%F)}"
+PROFILE="${AWS_PROFILE_HEIMDALL:-kgns}"
+REGION="${AWS_REGION_HEIMDALL:-eu-central-1}"
+account="$(aws sts get-caller-identity --profile "$PROFILE" --query Account --output text)"
+aws s3 cp --profile "$PROFILE" --region "$REGION" \
+	"s3://heimdall-raw-$account/derived/report/dt=$day/$device.md" -

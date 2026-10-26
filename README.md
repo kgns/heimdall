@@ -231,3 +231,17 @@ dashboard "heimdall / daily analysis" shows them. To run past days:
 ```sh
 terraform apply -var 'analytics_backfill=["2026-10-26"]'
 ```
+
+## Daily report
+
+After each daily analysis, `heimdall-report` (`terraform/report.tf`) runs.
+It gives the day's summary, with the previous six days as a trend, to
+Claude on Amazon Bedrock (`var.report_model`, by default the EU inference
+profile of Claude Sonnet 5.5). The written report is stored as
+`derived/report/dt=<day>/<device>.md` and posted to Slack. If the model
+cannot be called, a plain report from the same numbers is stored and posted
+instead.
+
+```sh
+scripts/report ex7501-home 2026-10-26
+```
