@@ -210,4 +210,9 @@ func TestTLSBlocked(t *testing.T) {
 	if got := d.Active(); len(got) != 1 || got[0] != "tls:discord" {
 		t.Fatalf("active %v", got)
 	}
+	ends := d.Flush(t0.Add(13 * time.Minute))
+	if len(ends) != 1 || ends[0].Extra["event"] != "incident_end" || ends[0].Extra["reason"] != "probe_stopped" ||
+		ends[0].Extra["incident_id"] != inc.Extra["incident_id"] || len(d.Active()) != 0 {
+		t.Fatalf("%+v", ends)
+	}
 }

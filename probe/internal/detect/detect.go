@@ -528,6 +528,26 @@ func severity(sr *series) float64 {
 	return s + 10*(sr.curLoss-sr.baseLoss)
 }
 
+// Flush ends every open incident, for a probe that is stopping; the next
+// run starts without them and would otherwise leave them open downstream.
+func (d *Detector) Flush(now time.Time) []sample.Sample {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	keys := make([]string, 0, len(d.incidents))
+	for k := range d.incidents {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var out []sample.Sample
+	for _, k := range keys {
+		ev := d.incidentEvent(d.incidents[k], "incident_end", nil, now)
+		ev.Extra["reason"] = "probe_stopped"
+		out = append(out, ev)
+		delete(d.incidents, k)
+	}
+	return out
+}
+
 // Active returns the open incidents, for heartbeats.
 func (d *Detector) Active() []string {
 	d.mu.Lock()

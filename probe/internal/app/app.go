@@ -393,6 +393,11 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 
 	sched.Run(ctx)
 
+	if det != nil {
+		for _, ev := range det.Flush(h.Now()) {
+			rec.Emit(ev)
+		}
+	}
 	rec.Emit(sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, Extra: map[string]any{
 		"event":    "stop",
 		"uptime_s": int64(h.Now().Sub(started).Seconds()),
