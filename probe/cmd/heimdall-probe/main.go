@@ -40,7 +40,7 @@ func main() {
 	case "run":
 		err = runProbe(ctx, os.Args[2:])
 	case "check":
-		err = runCheck(os.Args[2:])
+		err = runCheck(ctx, os.Args[2:])
 	case "selftest":
 		err = runSelftest(ctx, os.Args[2:])
 	case "version", "-version", "--version":
@@ -81,7 +81,7 @@ func runProbe(ctx context.Context, args []string) error {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lv}))
 
-	cfg, err := loadConfig(fs, *path)
+	cfg, _, err := loadAll(fs, *path)
 	if err != nil {
 		return err
 	}
@@ -93,30 +93,6 @@ func runProbe(ctx context.Context, args []string) error {
 	signal.Ignore(syscall.SIGHUP)
 	app.ApplyRuntime(cfg.Runtime, log)
 	return app.Run(ctx, cfg, version, app.LiveHost(), log)
-}
-
-func runCheck(args []string) error {
-	fs := flag.NewFlagSet("check", flag.ContinueOnError)
-	path := fs.String("config", config.DefaultPath, "configuration file")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	cfg, err := loadConfig(fs, *path)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("config ok: %d targets, %.1f probes/s (budget %.1f)\n", len(cfg.Targets), cfg.ProbeRate(), cfg.Scheduler.MaxPPS)
-	for _, t := range cfg.Targets {
-		dst := t.IP
-		if t.Auto != "" {
-			dst = "auto:" + t.Auto
-		}
-		if t.TTL > 0 {
-			dst = fmt.Sprintf("hop %d via %s", t.TTL, t.IP)
-		}
-		fmt.Printf("  %-24s %-10s %-16s %-18s every %v\n", t.ID, t.Category, t.Service, dst, cfg.TargetInterval(t))
-	}
-	return nil
 }
 
 func runSelftest(ctx context.Context, args []string) error {

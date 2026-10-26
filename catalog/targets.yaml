@@ -1,0 +1,173 @@
+# Global service catalog.
+#
+# Each service lists the hostnames (resolved through the CPE's own resolver,
+# like LAN clients do) or static IPs to measure. protocols defaults to
+# [icmp]; services whose endpoints drop ICMP use tcp or http instead.
+# discovery names mechanisms that find the servers the service really uses
+# for its traffic (video caches, game relays, voice regions).
+version: 1
+services:
+  # streaming
+  - id: youtube
+    name: YouTube
+    category: streaming
+    hosts: [www.youtube.com]
+    discovery: [youtube_cache]
+    notes: video is served from googlevideo caches, often inside the ISP
+  - id: netflix
+    name: Netflix
+    category: streaming
+    hosts: [www.netflix.com]
+    discovery: [netflix_oca]
+    notes: www is the AWS-hosted UI; video comes from Open Connect appliances
+  - id: prime-video
+    name: Prime Video
+    category: streaming
+    hosts: [www.primevideo.com]
+  - id: disney-plus
+    name: Disney+
+    category: streaming
+    hosts: [www.disneyplus.com]
+  - id: twitch
+    name: Twitch
+    category: streaming
+    hosts: [www.twitch.tv]
+  - id: spotify
+    name: Spotify
+    category: streaming
+    hosts: [open.spotify.com]
+  - id: apple-tv
+    name: Apple TV
+    category: streaming
+    hosts: [tv.apple.com]
+
+  # gaming
+  - id: steam
+    name: Steam
+    category: gaming
+    hosts: [store.steampowered.com]
+    discovery: [steam_sdr]
+    notes: CS2 and Dota 2 traffic goes through Valve SDR relays
+  - id: riot
+    name: Riot Games
+    category: gaming
+    hosts: [auth.riotgames.com]
+    discovery: [riot]
+  - id: epic
+    name: Epic Games
+    category: gaming
+    hosts: [www.epicgames.com]
+  - id: blizzard
+    name: Blizzard Battle.net
+    category: gaming
+    hosts: [eu.battle.net]
+  - id: aws-gamelift
+    name: AWS GameLift regions
+    category: gaming
+    discovery: [gamelift]
+    notes: many multiplayer titles host matches on GameLift
+
+  # video calls
+  - id: google-meet
+    name: Google Meet
+    category: video_calls
+    hosts: [meet.google.com]
+    discovery: [stun]
+  - id: zoom
+    name: Zoom
+    category: video_calls
+    hosts: [zoom.us]
+  - id: teams
+    name: Microsoft Teams
+    category: video_calls
+    hosts: [teams.microsoft.com]
+    discovery: [stun]
+
+  # voice
+  - id: discord
+    name: Discord
+    category: voice
+    hosts: [discord.com, gateway.discord.gg]
+    discovery: [discord_voice]
+
+  # messaging
+  - id: whatsapp
+    name: WhatsApp
+    category: messaging
+    hosts: [web.whatsapp.com]
+  - id: telegram
+    name: Telegram
+    category: messaging
+    hosts: [web.telegram.org]
+
+  # browsing
+  - id: google
+    name: Google Search
+    category: browsing
+    hosts: [www.google.com]
+  - id: wikipedia
+    name: Wikipedia
+    category: browsing
+    hosts: [www.wikipedia.org]
+  - id: cloudflare
+    name: Cloudflare
+    category: browsing
+    hosts: [www.cloudflare.com]
+
+  # social
+  - id: facebook
+    name: Facebook
+    category: social
+    hosts: [www.facebook.com]
+  - id: instagram
+    name: Instagram
+    category: social
+    hosts: [www.instagram.com]
+  - id: tiktok
+    name: TikTok
+    category: social
+    hosts: [www.tiktok.com]
+  - id: x
+    name: X
+    category: social
+    hosts: [x.com]
+  - id: reddit
+    name: Reddit
+    category: social
+    hosts: [www.reddit.com]
+
+  # cloud and work
+  - id: microsoft-365
+    name: Microsoft 365
+    category: cloud_work
+    hosts: [outlook.office.com]
+  - id: github
+    name: GitHub
+    category: cloud_work
+    hosts: [github.com]
+  - id: aws-eu-central-1
+    name: AWS Frankfurt
+    category: cloud_work
+    hosts: [dynamodb.eu-central-1.amazonaws.com]
+    protocols: [tcp]
+    notes: AWS service endpoints usually drop ICMP
+  - id: aws-eu-south-1
+    name: AWS Milan
+    category: cloud_work
+    hosts: [dynamodb.eu-south-1.amazonaws.com]
+    protocols: [tcp]
+  - id: aws-eu-north-1
+    name: AWS Stockholm
+    category: cloud_work
+    hosts: [dynamodb.eu-north-1.amazonaws.com]
+    protocols: [tcp]
+  - id: aws-il-central-1
+    name: AWS Tel Aviv
+    category: cloud_work
+    hosts: [dynamodb.il-central-1.amazonaws.com]
+    protocols: [tcp]
+  - id: aws-me-central-1
+    name: AWS UAE
+    category: cloud_work
+    hosts: [dynamodb.me-central-1.amazonaws.com]
+    protocols: [tcp]

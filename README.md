@@ -40,6 +40,24 @@ heimdall-probe run -stdout                                  # built-in defaults,
 `configs/router.example.yaml` documents every option. Samples go to a
 size-capped rotating JSONL file under `/var/tmp/heimdall` (tmpfs on the CPE).
 
+## Catalog
+
+`catalog/targets.yaml` lists services by usage category (streaming, gaming,
+video calls, voice, messaging, browsing, social, cloud and work).
+`catalog/regions/<name>.yaml` adds regional services and is selected with
+`catalog.regions`. Each host becomes a target `<service>/<host>` that is
+resolved through the system resolver, the same path LAN clients use, and
+re-resolved every five minutes. While the current address stays in the
+answer the target keeps it; when it disappears a `dst_change` event records
+the move.
+
+```sh
+heimdall-probe check -config /misc/heimdall/config.yaml -resolve
+```
+
+resolves every host once and shows the chosen address, the number of
+answers and the lookup time, and flags addresses the route guard blocks.
+
 ## Self-test
 
 ```sh

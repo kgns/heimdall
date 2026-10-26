@@ -18,6 +18,7 @@ import (
 	"github.com/kgns/heimdall/probe/internal/config"
 	"github.com/kgns/heimdall/probe/internal/netwatch"
 	"github.com/kgns/heimdall/probe/internal/probes/icmp"
+	"github.com/kgns/heimdall/probe/internal/resolve"
 	"github.com/kgns/heimdall/probe/internal/sample"
 	"github.com/kgns/heimdall/probe/internal/scheduler"
 	"github.com/kgns/heimdall/probe/internal/sysinfo"
@@ -30,6 +31,7 @@ type Host struct {
 	Interface  func(name string) (sysinfo.Interface, error)
 	ListenICMP func(mode icmp.Mode) (icmp.Conn, error)
 	Hostname   func() (string, error)
+	Lookup     resolve.LookupFunc
 	Now        func() time.Time
 	Stdout     io.Writer
 	ExtraSinks []sample.Sink
@@ -42,6 +44,7 @@ func LiveHost() Host {
 		Interface:  sysinfo.LookupInterface,
 		ListenICMP: icmp.Listen,
 		Hostname:   os.Hostname,
+		Lookup:     resolve.SystemLookup,
 		Now:        time.Now,
 		Stdout:     os.Stdout,
 	}
@@ -92,6 +95,7 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		}
 		t := target.New(tc.ID, tc.Category, tc.Service, dst)
 		t.Auto = tc.Auto
+		t.Host = tc.Host
 		t.TTL = tc.TTL
 		t.Interval = cfg.TargetInterval(tc)
 		if t.TTL > 0 && pinger.Mode() != icmp.ModeRaw {
@@ -111,7 +115,33 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		log.Warn("initial network refresh failed", "err", err)
 	}
 
+	var hostTargets []*target.Target
+	for _, t := range targets {
+		if t.Host != "" {
+			hostTargets = append(hostTargets, t)
+		}
+	}
+	res := resolve.New(h.Lookup, nw.Allowed, rec.Emit, log, cfg.Catalog.ResolveTimeout)
+	if len(hostTargets) > 0 {
+		start := time.Now()
+		res.RefreshAll(ctx, hostTargets, 4)
+		resolved := 0
+		for _, t := range hostTargets {
+			if t.Addr().IsValid() {
+				resolved++
+			}
+		}
+		log.Info("hostnames resolved", "resolved", resolved, "total", len(hostTargets), "took", time.Since(start).Round(time.Millisecond))
+	}
+
 	sched := scheduler.New(scheduler.NewLimiter(cfg.Scheduler.MaxPPS, cfg.Scheduler.Burst, nil), uint64(h.Now().UnixNano()))
+	for _, t := range hostTargets {
+		sched.Add(scheduler.Job{
+			Name:     "resolve/" + t.ID,
+			Interval: cfg.Catalog.ResolveInterval,
+			Run:      func(ctx context.Context) { res.Refresh(ctx, t) },
+		})
+	}
 	timeout := cfg.ICMP.Timeout
 	for _, t := range targets {
 		sched.Add(scheduler.Job{
@@ -168,16 +198,18 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 	})
 
 	rec.Emit(sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, Extra: map[string]any{
-		"event":      "start",
-		"version":    version,
-		"goos":       runtime.GOOS,
-		"goarch":     runtime.GOARCH,
-		"icmp_mode":  string(pinger.Mode()),
-		"targets":    len(targets),
-		"probe_rate": cfg.ProbeRate(),
-		"wan_iface":  wan.Iface,
-		"gateway":    addrString(wan.Gateway),
-		"wan_ipv4":   addrStrings(wan.WANIPv4),
+		"event":        "start",
+		"version":      version,
+		"goos":         runtime.GOOS,
+		"goarch":       runtime.GOARCH,
+		"icmp_mode":    string(pinger.Mode()),
+		"targets":      len(targets),
+		"host_targets": len(hostTargets),
+		"regions":      cfg.Catalog.Regions,
+		"probe_rate":   cfg.ProbeRate(),
+		"wan_iface":    wan.Iface,
+		"gateway":      addrString(wan.Gateway),
+		"wan_ipv4":     addrStrings(wan.WANIPv4),
 	}})
 	log.Info("probe started", "device", device, "version", version, "icmp_mode", pinger.Mode(),
 		"targets", len(targets), "probe_rate", cfg.ProbeRate(), "wan_iface", wan.Iface, "gateway", wan.Gateway)

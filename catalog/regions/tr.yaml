@@ -1,0 +1,74 @@
+# Türkiye regional pack. Loaded with catalog.regions: [tr].
+version: 1
+region: tr
+services:
+  # streaming
+  - id: tv-plus
+    name: TV+
+    category: streaming
+    hosts: [tvplus.com.tr]
+  - id: tod
+    name: TOD
+    category: streaming
+    hosts: [www.todtv.com.tr]
+  - id: exxen
+    name: Exxen
+    category: streaming
+    hosts: [www.exxen.com]
+  - id: gain
+    name: Gain
+    category: streaming
+    hosts: [www.gain.tv]
+  - id: trt-tabii
+    name: TRT tabii
+    category: streaming
+    hosts: [www.tabii.com]
+  - id: puhutv
+    name: puhutv
+    category: streaming
+    hosts: [puhutv.com]
+  - id: hbo-max
+    name: HBO Max
+    category: streaming
+    hosts: [www.hbomax.com]
+    notes: replaced BluTV in Türkiye
+
+  # gaming
+  - id: riot-tr
+    name: Riot Games TR
+    category: gaming
+    hosts: [tr1.api.riotgames.com]
+    discovery: [riot]
+    notes: League of Legends TR and Valorant Istanbul game servers come from discovery
+
+  # messaging
+  - id: bip
+    name: BiP
+    category: messaging
+    hosts: [www.bip.com]
+
+  # browsing
+  - id: turkiye-gov
+    name: e-Devlet
+    category: browsing
+    hosts: [www.turkiye.gov.tr]
+  - id: trendyol
+    name: Trendyol
+    category: browsing
+    hosts: [www.trendyol.com]
+  - id: hepsiburada
+    name: Hepsiburada
+    category: browsing
+    hosts: [www.hepsiburada.com]
+  - id: sahibinden
+    name: sahibinden.com
+    category: browsing
+    hosts: [www.sahibinden.com]
+  - id: hurriyet
+    name: Hürriyet
+    category: browsing
+    hosts: [www.hurriyet.com.tr]
+  - id: sozcu
+    name: Sözcü
+    category: browsing
+    hosts: [www.sozcu.com.tr]

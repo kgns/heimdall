@@ -28,6 +28,7 @@ type Config struct {
 	Scheduler   Scheduler   `yaml:"scheduler"`
 	ICMP        ICMP        `yaml:"icmp"`
 	Targets     []Target    `yaml:"targets"`
+	Catalog     Catalog     `yaml:"catalog"`
 	Output      Output      `yaml:"output"`
 	SelfMetrics SelfMetrics `yaml:"self_metrics"`
 	NetWatch    NetWatch    `yaml:"netwatch"`
@@ -55,18 +56,35 @@ type ICMP struct {
 	PayloadSize int           `yaml:"payload_size"`
 }
 
-// Target is one ICMP destination. With TTL set, the echo request is sent
-// towards IP with that IP TTL and the target measured is the router where
-// it expires, which answers with ICMP time exceeded. This reaches routers
-// that ignore echo requests addressed to themselves.
+// Target is one ICMP destination, given as exactly one of IP, Host (resolved
+// through the system resolver) or Auto. With TTL set, the echo request is
+// sent towards IP with that IP TTL and the target measured is the router
+// where it expires, which answers with ICMP time exceeded. This reaches
+// routers that ignore echo requests addressed to themselves.
 type Target struct {
 	ID       string        `yaml:"id"`
 	Category string        `yaml:"category"`
 	Service  string        `yaml:"service"`
 	IP       string        `yaml:"ip"`
+	Host     string        `yaml:"host"`
 	Auto     string        `yaml:"auto"`
 	TTL      int           `yaml:"ttl"`
 	Interval time.Duration `yaml:"interval"`
+}
+
+// Catalog points at the service catalog and selects what to load from it.
+type Catalog struct {
+	// Path is the global catalog file. Empty disables the catalog.
+	Path string `yaml:"path"`
+	// Regions names regional packs, loaded from regions/<name>.yaml next
+	// to Path.
+	Regions []string `yaml:"regions"`
+	// Only, when non-empty, keeps just these service IDs or categories.
+	Only []string `yaml:"only"`
+	// Exclude drops these service IDs or categories.
+	Exclude         []string      `yaml:"exclude"`
+	ResolveInterval time.Duration `yaml:"resolve_interval"`
+	ResolveTimeout  time.Duration `yaml:"resolve_timeout"`
 }
 
 // MaxTargetTTL bounds TTL-limited targets to the first few hops, which is
@@ -102,7 +120,8 @@ type NetWatch struct {
 func Default() Config {
 	return Config{
 		Runtime:   Runtime{GOMAXPROCS: 1, MemoryLimit: 48 * MiB, Nice: 10},
-		Scheduler: Scheduler{MaxPPS: 60, Burst: 10},
+		Scheduler: Scheduler{MaxPPS: 100, Burst: 10},
+		Catalog:   Catalog{ResolveInterval: 5 * time.Minute, ResolveTimeout: 5 * time.Second},
 		ICMP:      ICMP{Mode: "auto", Interval: time.Second, Timeout: 2 * time.Second, PayloadSize: 32},
 		Output: Output{JSONL: JSONL{
 			Enabled: true, Dir: "/var/tmp/heimdall", MaxFileSize: 4 * MiB, MaxFiles: 3,
@@ -177,7 +196,24 @@ func (c *Config) ProbeRate() float64 {
 	return r
 }
 
-var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
+var (
+	idPattern       = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
+	targetIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_./-]{0,127}$`)
+	hostPattern     = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
+)
+
+// ValidHost reports whether h is a lowercase DNS hostname with at least
+// two labels.
+func ValidHost(h string) bool { return len(h) <= 253 && hostPattern.MatchString(h) }
+
+// UsableAddr reports whether a resolved or configured address can be a
+// measurement target: public IPv4 unicast. Private, CGNAT, loopback and
+// unspecified answers usually mean a DNS block page or a broken record.
+func UsableAddr(a netip.Addr) bool {
+	return a.Is4() && a.IsGlobalUnicast() && !a.IsPrivate() && !cgnat.Contains(a)
+}
+
+var cgnat = netip.MustParsePrefix("100.64.0.0/10")
 
 // Validate reports every problem found, joined into one error.
 func (c *Config) Validate() error {
@@ -223,8 +259,8 @@ func (c *Config) Validate() error {
 		if t.ID != "" {
 			where += " (" + t.ID + ")"
 		}
-		if !idPattern.MatchString(t.ID) {
-			bad("%s: id must match %s", where, idPattern)
+		if !targetIDPattern.MatchString(t.ID) {
+			bad("%s: id must match %s", where, targetIDPattern)
 		} else if ids[t.ID] {
 			bad("%s: duplicate id", where)
 		}
@@ -232,9 +268,19 @@ func (c *Config) Validate() error {
 		if t.Category == "" || t.Service == "" {
 			bad("%s: category and service are required", where)
 		}
+		set := 0
+		for _, v := range []string{t.IP, t.Host, t.Auto} {
+			if v != "" {
+				set++
+			}
+		}
 		switch {
-		case t.IP != "" && t.Auto != "":
-			bad("%s: set either ip or auto, not both", where)
+		case set > 1:
+			bad("%s: set only one of ip, host or auto", where)
+		case t.Host != "":
+			if !ValidHost(t.Host) {
+				bad("%s: host %q is not a valid lowercase hostname", where, t.Host)
+			}
 		case t.IP != "":
 			a, err := netip.ParseAddr(t.IP)
 			if err != nil || !a.Is4() {
@@ -246,7 +292,7 @@ func (c *Config) Validate() error {
 		case t.Auto != "":
 			bad("%s: auto %q: only %q is supported", where, t.Auto, AutoGateway)
 		default:
-			bad("%s: ip or auto is required", where)
+			bad("%s: one of ip, host or auto is required", where)
 		}
 		if t.TTL < 0 || t.TTL > MaxTargetTTL {
 			bad("%s: ttl %d must be between 1 and %d", where, t.TTL, MaxTargetTTL)
@@ -271,6 +317,17 @@ func (c *Config) Validate() error {
 		}
 		if j.MaxFiles < 1 {
 			bad("output.jsonl.max_files must be at least 1")
+		}
+	}
+	if c.Catalog.ResolveInterval < 30*time.Second {
+		bad("catalog.resolve_interval must be at least 30s")
+	}
+	if c.Catalog.ResolveTimeout <= 0 || c.Catalog.ResolveTimeout > 30*time.Second {
+		bad("catalog.resolve_timeout must be in (0, 30s]")
+	}
+	for _, r := range c.Catalog.Regions {
+		if !idPattern.MatchString(r) {
+			bad("catalog.regions: %q is not a valid region name", r)
 		}
 	}
 	if c.SelfMetrics.Interval < time.Second {

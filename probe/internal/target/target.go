@@ -17,6 +17,8 @@ type Target struct {
 	// Auto names the source of a dynamic address, or is empty for a fixed
 	// address.
 	Auto string
+	// Host is the hostname the address is resolved from, if any.
+	Host string
 	// TTL, when non-zero, limits the probe's IP TTL so that the router at
 	// that hop answers instead of the destination.
 	TTL      int

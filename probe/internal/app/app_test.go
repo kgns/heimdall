@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/netip"
@@ -114,6 +115,15 @@ func testHost(t *testing.T, conn icmp.Conn, mem *sample.MemorySink) Host {
 		},
 		ListenICMP: func(icmp.Mode) (icmp.Conn, error) { return conn, nil },
 		Hostname:   func() (string, error) { return "EX7501-B0", nil },
+		Lookup: func(_ context.Context, host string) ([]netip.Addr, error) {
+			switch host {
+			case "www.youtube.com":
+				return []netip.Addr{netip.MustParseAddr("142.251.150.4")}, nil
+			case "blocked.example.com":
+				return []netip.Addr{netip.MustParseAddr("0.0.0.0")}, nil
+			}
+			return nil, errors.New("no such host")
+		},
 		Now:        time.Now,
 		Stdout:     io.Discard,
 		ExtraSinks: []sample.Sink{mem},
@@ -133,6 +143,9 @@ func TestRunEmitsSamples(t *testing.T) {
 		{ID: "mgmt", Category: "infra", Service: "operator", IP: "62.58.244.17"},
 		{ID: "hop2", Category: "infra", Service: "isp-hop", IP: "1.1.1.1", TTL: 2},
 		{ID: "hop9", Category: "infra", Service: "isp-hop", IP: "1.1.1.1", TTL: 9},
+		{ID: "youtube/www.youtube.com", Category: "streaming", Service: "youtube", Host: "www.youtube.com"},
+		{ID: "x/blocked.example.com", Category: "browsing", Service: "x", Host: "blocked.example.com"},
+		{ID: "x/nxdomain.example.com", Category: "browsing", Service: "x", Host: "nxdomain.example.com"},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -184,6 +197,17 @@ func TestRunEmitsSamples(t *testing.T) {
 	}
 	if byTarget["gateway"][sample.StatusOK] < 8 || byTarget["cf"][sample.StatusOK] < 8 {
 		t.Fatalf("ok counts %+v", byTarget)
+	}
+	if byTarget["youtube/www.youtube.com"][sample.StatusOK] < 8 {
+		t.Fatalf("host target counts %+v", byTarget["youtube/www.youtube.com"])
+	}
+	for _, id := range []string{"x/blocked.example.com", "x/nxdomain.example.com"} {
+		if _, probed := byTarget[id]; probed {
+			t.Fatalf("%s probed without a usable address", id)
+		}
+	}
+	if events["dst_change"] != 1 || events["resolve_unusable"] != 1 || events["resolve_error"] != 1 {
+		t.Fatalf("resolve events %+v", events)
 	}
 	if byTarget["hop2"][sample.StatusOK] < 8 || byTarget["hop9"][sample.StatusError] < 8 {
 		t.Fatalf("hop counts %+v %+v", byTarget["hop2"], byTarget["hop9"])

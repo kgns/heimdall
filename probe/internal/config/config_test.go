@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,6 +85,12 @@ func TestParseRejects(t *testing.T) {
 		"budget":        "scheduler:\n  max_pps: 1\n",
 		"ttl range":     "targets:\n  - {id: a, category: c, service: s, ip: 1.1.1.1, ttl: 40}\n",
 		"ttl auto":      "targets:\n  - {id: a, category: c, service: s, auto: gateway, ttl: 1}\n",
+		"ttl host":      "targets:\n  - {id: a, category: c, service: s, host: www.example.com, ttl: 1}\n",
+		"ip and host":   "targets:\n  - {id: a, category: c, service: s, ip: 1.1.1.1, host: one.one.one.one}\n",
+		"bad host":      "targets:\n  - {id: a, category: c, service: s, host: 'Not A Host'}\n",
+		"single label":  "targets:\n  - {id: a, category: c, service: s, host: localhost}\n",
+		"region name":   "catalog:\n  regions: ['../etc']\n",
+		"resolve fast":  "catalog:\n  resolve_interval: 1s\n",
 		"jsonl dir":     "output:\n  jsonl:\n    dir: ''\n",
 		"nice":          "runtime:\n  nice: 25\n",
 	}
@@ -112,6 +119,36 @@ func TestLoadFile(t *testing.T) {
 	_, err := Load(p, false)
 	if err == nil || !strings.Contains(err.Error(), p) {
 		t.Fatalf("err %v", err)
+	}
+}
+
+func TestHostTarget(t *testing.T) {
+	c, err := Parse([]byte("targets:\n  - {id: youtube/www.youtube.com, category: streaming, service: youtube, host: www.youtube.com}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Targets[0].Host != "www.youtube.com" {
+		t.Fatalf("%+v", c.Targets[0])
+	}
+}
+
+func TestUsableAddr(t *testing.T) {
+	tests := map[string]bool{
+		"142.250.187.110": true,
+		"1.1.1.1":         true,
+		"0.0.0.0":         false,
+		"127.0.0.1":       false,
+		"10.1.2.3":        false,
+		"192.168.1.10":    false,
+		"100.90.232.1":    false,
+		"169.254.1.1":     false,
+		"224.0.0.1":       false,
+		"2606:4700::1111": false,
+	}
+	for in, want := range tests {
+		if got := UsableAddr(netip.MustParseAddr(in)); got != want {
+			t.Errorf("UsableAddr(%s) = %v, want %v", in, got, want)
+		}
 	}
 }
 

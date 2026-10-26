@@ -10,7 +10,7 @@ runtime:
   nice: 10               # lower CPU priority than the router's own daemons
 
 scheduler:
-  max_pps: 60            # hard cap on probes per second across all targets
+  max_pps: 100           # hard cap on probes per second across all targets
   burst: 10
 
 icmp:
@@ -34,6 +34,17 @@ targets:
   - {id: cloudflare-dns, category: infra, service: cloudflare,  ip: 1.1.1.1}
   - {id: google-dns,     category: infra, service: google,      ip: 8.8.8.8}
   - {id: quad9-dns,      category: infra, service: quad9,       ip: 9.9.9.9}
+
+# Service catalog. Each host becomes a target "<service>/<host>", resolved
+# through the system resolver (on the CPE: dnsmasq and whatever it forwards
+# to) and re-resolved every resolve_interval. Leave path empty to disable.
+catalog:
+  path: /misc/heimdall/catalog/targets.yaml
+  regions: [tr]          # loads regions/<name>.yaml next to path
+  only: []               # keep only these service IDs or categories
+  exclude: []            # drop these service IDs or categories
+  resolve_interval: 5m
+  resolve_timeout: 5s
 
 output:
   stdout: false

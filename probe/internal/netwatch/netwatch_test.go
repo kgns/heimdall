@@ -69,6 +69,9 @@ func TestRefreshEX7501(t *testing.T) {
 	if d, ok := gw.Dst(); !ok || d != st.Gateway {
 		t.Fatalf("gateway target %v %v", d, ok)
 	}
+	if !w.Allowed(netip.MustParseAddr("142.250.1.1")) || w.Allowed(netip.MustParseAddr("62.58.244.20")) {
+		t.Fatal("Allowed does not follow the side route")
+	}
 	if _, ok := cf.Dst(); !ok {
 		t.Fatal("public target blocked")
 	}

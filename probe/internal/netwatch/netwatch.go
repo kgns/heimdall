@@ -39,7 +39,18 @@ type Watcher struct {
 
 	mu          sync.Mutex
 	cur         State
+	routes      []sysinfo.Route
+	def         sysinfo.Route
+	hasDef      bool
 	initialized bool
+}
+
+// Allowed reports whether traffic to a would leave through the default
+// route's interface, according to the last refresh.
+func (w *Watcher) Allowed(a netip.Addr) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.hasDef && egressAllowed(w.routes, w.def, a)
 }
 
 // New returns a watcher. emit receives change events.
@@ -95,6 +106,7 @@ func (w *Watcher) Refresh() (State, error) {
 	w.mu.Lock()
 	prev, wasInit := w.cur, w.initialized
 	w.cur, w.initialized = st, true
+	w.routes, w.def, w.hasDef = routes, def, hasDef
 	w.mu.Unlock()
 
 	if wasInit && !st.equal(prev) {
