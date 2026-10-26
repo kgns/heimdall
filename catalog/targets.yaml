@@ -99,6 +99,8 @@ services:
     name: Telegram
     category: messaging
     hosts: [web.telegram.org]
+    protocols: [tcp]
+    notes: drops ICMP
 
   # browsing
   - id: google
