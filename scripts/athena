@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Run one Athena query in the heimdall workgroup and print the result as a
+# table. Read-only use: queries go through the workgroup's scan limit.
+#   scripts/athena "SELECT ... FROM heimdall.samples WHERE device = '...' AND dt = '...'"
+set -euo pipefail
+PROFILE="${AWS_PROFILE_HEIMDALL:-kgns}"
+REGION="${AWS_REGION_HEIMDALL:-eu-central-1}"
+a() { aws athena --profile "$PROFILE" --region "$REGION" "$@"; }
+
+id=$(a start-query-execution --work-group heimdall --query-string "$1" --query QueryExecutionId --output text)
+while :; do
+	state=$(a get-query-execution --query-execution-id "$id" --query 'QueryExecution.Status.State' --output text)
+	case "$state" in SUCCEEDED | FAILED | CANCELLED) break ;; esac
+	sleep 1
+done
+a get-query-execution --query-execution-id "$id" \
+	--query 'QueryExecution.[Status.State,Status.StateChangeReason,Statistics.DataScannedInBytes]' --output text >&2
+[ "$state" = SUCCEEDED ] || exit 1
+a get-query-results --query-execution-id "$id" --output json |
+	python3 -c '
+import json, sys
+rows = [[c.get("VarCharValue", "") for c in r["Data"]] for r in json.load(sys.stdin)["ResultSet"]["Rows"]]
+if rows:
+    w = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+    for r in rows:
+        print("  ".join(c.ljust(w[i]) for i, c in enumerate(r)))
+'
