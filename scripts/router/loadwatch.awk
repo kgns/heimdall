@@ -21,8 +21,7 @@ function num(name,    v) {
         }
 }
 /"kind":"wan"/ {
-    t = int(num("ts_ms") / 1000)
-    printf "%02d:%02d:%02d %9.2f %9.2f", int(t / 3600 + 3) % 24, int(t / 60) % 60, t % 60, num("rx_bps") / 1e6, num("tx_bps") / 1e6
+    printf "%-8s %9.2f %9.2f", strftime("%H:%M:%S", int(num("ts_ms") / 1000)), num("rx_bps") / 1e6, num("tx_bps") / 1e6
     for (i = 1; i <= n; i++) printf " %14s", (i in last) ? last[i] : "-"
     printf "\n"
     fflush()
