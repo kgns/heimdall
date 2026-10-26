@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync"
 
 	xicmp "golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
@@ -47,6 +48,11 @@ type sockConn struct {
 	mode Mode
 	pc   *xicmp.PacketConn
 	p4   *ipv4.PacketConn
+
+	// wmu serializes writes so that a temporary socket TTL applies only to
+	// the packet it was set for.
+	wmu        sync.Mutex
+	defaultTTL int
 }
 
 // Listen opens an IPv4 ICMP socket. With ModeAuto it tries raw first.
@@ -80,6 +86,9 @@ func listen(mode Mode, network string) (*sockConn, error) {
 	if c.p4 != nil {
 		// TTL is informational; a kernel refusing IP_RECVTTL is not fatal.
 		_ = c.p4.SetControlMessage(ipv4.FlagTTL, true)
+		if ttl, err := c.p4.TTL(); err == nil {
+			c.defaultTTL = ttl
+		}
 	}
 	return c, nil
 }
@@ -91,17 +100,26 @@ func (c *sockConn) WriteTo(b []byte, dst netip.Addr, ttl int) error {
 	if c.mode == ModeDgram {
 		addr = &net.UDPAddr{IP: dst.AsSlice()}
 	}
-	if ttl > 0 {
-		if c.p4 == nil {
-			return errors.New("per-packet TTL is not supported on this socket")
-		}
-		// A per-packet IP_TTL control message keeps one shared socket for
-		// all targets instead of one socket per TTL value.
-		_, err := c.p4.WriteTo(b, &ipv4.ControlMessage{TTL: ttl}, addr)
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	if ttl <= 0 || ttl == c.defaultTTL {
+		_, err := c.pc.WriteTo(b, addr)
 		return err
 	}
-	_, err := c.pc.WriteTo(b, addr)
-	return err
+	if c.p4 == nil || c.defaultTTL == 0 {
+		return errors.New("per-packet TTL is not supported on this socket")
+	}
+	// The socket option is set around this one write instead of passing
+	// IP_TTL as a control message: x/net's ipv4.ControlMessage.Marshal
+	// encodes only IP_PKTINFO and would silently send with the default TTL.
+	if err := c.p4.SetTTL(ttl); err != nil {
+		return fmt.Errorf("set TTL %d: %w", ttl, err)
+	}
+	_, werr := c.pc.WriteTo(b, addr)
+	if err := c.p4.SetTTL(c.defaultTTL); err != nil {
+		return errors.Join(werr, fmt.Errorf("restore TTL %d: %w", c.defaultTTL, err))
+	}
+	return werr
 }
 
 func (c *sockConn) ReadFrom(b []byte) (int, netip.Addr, int, error) {
