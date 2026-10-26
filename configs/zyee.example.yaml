@@ -1,0 +1,55 @@
+# heimdall-probe configuration for the ZyEE Deployment Unit (zyee/). Only
+# what differs from the built-in defaults is set; configs/router.example.yaml
+# documents every option. zyee/build.sh installs this file (or
+# configs/local/zyee.yaml when present) as /opt/heimdall/etc/config.yaml.
+#
+# Inside the Execution Environment:
+#   - the container has its own PID namespace, so host daemons (dnsmasq,
+#     dnscrypt-proxy) are not visible: the process collector is off and the
+#     DNS layers come from the dnsmasq configuration files;
+#   - /tmp is tmpfs counted against the 60 MB memory limit, so no local
+#     sample file is written and the upload buffer is smaller;
+#   - /opt/heimdall is the writable, persistent overlay.
+device: ex7501-home
+
+runtime:
+  gomaxprocs: 1
+  memory_limit: 40MiB
+  nice: 10
+
+dns:
+  uncached_zone: w.lat.kgns.dev
+  identity:
+    zone: w.lat.kgns.dev
+
+targets:
+  - {id: isp-hop1,       category: infra, service: isp-hop,       ip: 1.1.1.1, ttl: 1}
+  - {id: isp-hop2,       category: infra, service: isp-hop,       ip: 1.1.1.1, ttl: 2}
+  - {id: isp-hop3,       category: infra, service: isp-hop,       ip: 1.1.1.1, ttl: 3}
+  - {id: cloudflare-dns, category: infra, service: cloudflare,    ip: 1.1.1.1}
+  - {id: google-dns,     category: infra, service: google,        ip: 8.8.8.8}
+  - {id: quad9-dns,      category: infra, service: quad9,         ip: 9.9.9.9}
+  - {id: k-root,         category: infra, service: k-root,        ip: 193.0.14.129}
+  - {id: f-root,         category: infra, service: f-root,        ip: 192.5.5.241}
+  - {id: aws-reflector,  category: infra, service: aws-reflector, host: reflector.lat.kgns.dev, protocols: [icmp, tcp, stamp]}
+
+catalog:
+  path: /opt/heimdall/catalog/targets.yaml
+  regions: [tr]
+
+output:
+  jsonl:
+    enabled: false
+
+upload:
+  enabled: true
+  url: https://ingest.lat.kgns.dev/v1/batch
+  token_file: /opt/heimdall/etc/upload.token
+  buffer: 12MiB
+  max_batch_bytes: 2MiB
+
+collectors:
+  lan:
+    salt_file: /opt/heimdall/etc/lan.salt
+  processes:
+    interval: 0s

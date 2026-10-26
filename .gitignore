@@ -27,10 +27,10 @@ __pycache__/
 /cloud/build/
 *.zip
 
-# zyee package artifacts
-/zyee/package/data/opt/heimdall/bin/
-/zyee/package/data/opt/heimdall/etc/config.yaml
-/zyee/*.ipk
+# zyee package artifacts (zyee/build.sh writes to dist/); never commit the
+# payload, which carries the upload token
+/zyee/package/data/opt/
+*.ipk
 
 # editors
 .idea/

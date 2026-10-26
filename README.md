@@ -245,3 +245,45 @@ instead.
 ```sh
 scripts/report ex7501-home 2026-10-26
 ```
+
+## ZyEE package
+
+`zyee/` builds a ZyEE Deployment Unit, so the probe runs on the router as a
+managed Execution Environment instead of a hand-started process:
+
+```sh
+make build-host build-arm64
+zyee/build.sh        # -> dist/heimdall_<version>_arm_cortex-a7.ipk
+```
+
+The package installs:
+
+- `/opt/heimdall/bin/heimdall-probe`
+- the catalog
+- `/opt/heimdall/etc/config.yaml`, from `configs/zyee.example.yaml`, or
+  `configs/local/zyee.yaml` when present
+- the device's upload token
+
+The token makes the `.ipk` a secret, so serve it only on the LAN and only
+while installing. `/sbin/heimdall.sh` supervises the probe and restarts it
+if it exits. `/bin/start.sh` starts it at boot, because the firmware ignores
+AutoStart. The label is `arm_cortex-a7`, the only architecture the router's
+opkg accepts, but the binary is the static arm64 build.
+
+To install:
+
+1. In the router's web UI, create an Execution Environment named
+   `heimdall`.
+2. Stop a hand-started probe (`scripts/rt stop`). Two probes with the same
+   device ID would mix their samples.
+3. Serve `dist/` over plain HTTP on the LAN, for example with
+   `python3 -m http.server -d dist 8080`.
+4. Install the Deployment Unit with the URL
+   `http://<lan-host>:8080/heimdall_<version>_arm_cortex-a7.ipk`, a unique
+   UUID (for example `7e0a-a000-a417-e002`) and the Execution Environment
+   `heimdall`. Keep the file name as built: zyeed checks that it starts with
+   `heimdall_`.
+
+The probe logs to `/tmp/heimdall/probe.log` inside the container, which on
+the host is `/tmp/heimdall/probe.log`. Its samples arrive in Athena as
+before.

@@ -1,0 +1,7 @@
+Package: heimdall
+Version: 0.1
+Architecture: arm_cortex-a7
+Section: net
+Priority: optional
+Maintainer: kgns
+Description: heimdall latency probe: per-service latency, loss and paths from the CPE
