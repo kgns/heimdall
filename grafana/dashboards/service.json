@@ -642,6 +642,116 @@
     },
     {
       "type": "table",
+      "title": "Latest path per target",
+      "description": "The most recent traceroute to each target of the service. Silent hops have no ip; other lists further routers seen at the same TTL (load balancing).",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "rtt_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "WITH t AS ( SELECT target_id, extra, row_number() OVER (PARTITION BY target_id ORDER BY ts_ms DESC) AS rn FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'trace' AND service = '$service' ) SELECT target_id, CAST(json_extract_scalar(hop, '$.ttl') AS integer) AS ttl, json_extract_scalar(hop, '$.ip') AS ip, CAST(json_extract_scalar(hop, '$.rtt_ms') AS double) AS rtt_ms, CAST(json_extract_scalar(hop, '$.answers') AS integer) AS answers, json_format(json_extract(hop, '$.other')) AS other FROM t CROSS JOIN UNNEST(CAST(json_extract(extra, '$.hops') AS array(json))) AS u(hop) WHERE rn = 1 ORDER BY target_id, ttl",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 12,
+        "h": 12
+      },
+      "id": 9
+    },
+    {
+      "type": "table",
+      "title": "Path changes",
+      "description": "Distinct router sequences seen per target. Silent hops count as '*', so rate-limited routers can add paths that are not real changes.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "unreached"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "WITH t AS ( SELECT target_id, ts_ms, CAST(json_extract_scalar(extra, '$.hop_count') AS integer) AS hops, json_extract_scalar(extra, '$.reached') = 'true' AS reached, array_join(transform(CAST(json_extract(extra, '$.hops') AS array(json)), h -> coalesce(json_extract_scalar(h, '$.ip'), '*')), ' ') AS path FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'trace' AND service = '$service' ) SELECT target_id, count(*) AS traces, count(DISTINCT path) AS paths, min(hops) AS min_hops, max(hops) AS max_hops, 100.0 * count_if(NOT reached) / count(*) AS unreached, CAST(from_unixtime(max(ts_ms) / 1000.0) AS timestamp) AS last_trace FROM t GROUP BY target_id ORDER BY paths DESC, target_id",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 36,
+        "w": 12,
+        "h": 12
+      },
+      "id": 10
+    },
+    {
+      "type": "table",
       "title": "Discovered servers",
       "description": "The caches, relays, voice regions, beacons and STUN servers the service's own endpoints pointed this line to. Empty for services without discovery.",
       "datasource": {
@@ -713,11 +823,11 @@
       ],
       "gridPos": {
         "x": 0,
-        "y": 36,
+        "y": 48,
         "w": 24,
         "h": 7
       },
-      "id": 9
+      "id": 11
     },
     {
       "type": "table",
@@ -780,11 +890,11 @@
       ],
       "gridPos": {
         "x": 0,
-        "y": 43,
+        "y": 55,
         "w": 24,
         "h": 7
       },
-      "id": 10
+      "id": 12
     },
     {
       "type": "table",
@@ -835,11 +945,11 @@
       ],
       "gridPos": {
         "x": 0,
-        "y": 50,
+        "y": 62,
         "w": 12,
         "h": 9
       },
-      "id": 11
+      "id": 13
     },
     {
       "type": "table",
@@ -890,11 +1000,11 @@
       ],
       "gridPos": {
         "x": 12,
-        "y": 50,
+        "y": 62,
         "w": 12,
         "h": 9
       },
-      "id": 12
+      "id": 14
     }
   ]
 }

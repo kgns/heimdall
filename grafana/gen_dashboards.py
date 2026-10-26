@@ -475,6 +475,57 @@ def service() -> dict[str, Any]:
         ),
         L.place(
             table(
+                "Latest path per target",
+                """
+                WITH t AS (
+                  SELECT target_id, extra,
+                    row_number() OVER (PARTITION BY target_id ORDER BY ts_ms DESC) AS rn
+                  FROM heimdall.samples
+                  WHERE {R} AND kind = 'trace' AND service = '$service'
+                )
+                SELECT target_id, CAST(json_extract_scalar(hop, '$.ttl') AS integer) AS ttl,
+                  json_extract_scalar(hop, '$.ip') AS ip,
+                  CAST(json_extract_scalar(hop, '$.rtt_ms') AS double) AS rtt_ms,
+                  CAST(json_extract_scalar(hop, '$.answers') AS integer) AS answers,
+                  json_format(json_extract(hop, '$.other')) AS other
+                FROM t CROSS JOIN UNNEST(CAST(json_extract(extra, '$.hops') AS array(json))) AS u(hop)
+                WHERE rn = 1
+                ORDER BY target_id, ttl
+                """,
+                "The most recent traceroute to each target of the service. Silent hops have no ip; "
+                "other lists further routers seen at the same TTL (load balancing).",
+                units={"rtt_ms": "ms"},
+            ),
+            12,
+            12,
+        ),
+        L.place(
+            table(
+                "Path changes",
+                """
+                WITH t AS (
+                  SELECT target_id, ts_ms, CAST(json_extract_scalar(extra, '$.hop_count') AS integer) AS hops,
+                    json_extract_scalar(extra, '$.reached') = 'true' AS reached,
+                    array_join(transform(CAST(json_extract(extra, '$.hops') AS array(json)),
+                      h -> coalesce(json_extract_scalar(h, '$.ip'), '*')), ' ') AS path
+                  FROM heimdall.samples
+                  WHERE {R} AND kind = 'trace' AND service = '$service'
+                )
+                SELECT target_id, count(*) AS traces, count(DISTINCT path) AS paths,
+                  min(hops) AS min_hops, max(hops) AS max_hops,
+                  100.0 * count_if(NOT reached) / count(*) AS unreached,
+                  CAST(from_unixtime(max(ts_ms) / 1000.0) AS timestamp) AS last_trace
+                FROM t GROUP BY target_id ORDER BY paths DESC, target_id
+                """,
+                "Distinct router sequences seen per target. Silent hops count as '*', so rate-limited "
+                "routers can add paths that are not real changes.",
+                units={"unreached": "percent"},
+            ),
+            12,
+            12,
+        ),
+        L.place(
+            table(
                 "Discovered servers",
                 """
                 SELECT target_id, arbitrary(json_extract_scalar(extra, '$.endpoint')) AS endpoint, dst_ip, kind,
