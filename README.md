@@ -27,7 +27,11 @@ make build        # bin/linux-armv7, bin/linux-arm64, bin/host
 ```
 
 Binaries are static (`CGO_ENABLED=0`), so they run on the CPE without any
-system libraries. `linux-armv7` is the primary CPE build.
+system libraries. Use `linux-arm64` on CPEs with a 64-bit kernel, even when
+their userland is 32-bit: Go has assembly for AES, SHA and the P-256 curve
+only on 64-bit ARM, and without it TLS handshakes cost tens of milliseconds
+of CPU that would be measured as network time. `linux-armv7` is for 32-bit
+kernels.
 
 ## Run
 
