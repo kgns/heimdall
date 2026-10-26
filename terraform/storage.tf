@@ -1,7 +1,8 @@
 locals {
-  name          = "heimdall"
-  raw_bucket    = "heimdall-raw-${var.aws_account_id}"
-  athena_bucket = "heimdall-athena-${var.aws_account_id}"
+  name             = "heimdall"
+  raw_bucket       = "heimdall-raw-${var.aws_account_id}"
+  athena_bucket    = "heimdall-athena-${var.aws_account_id}"
+  artifacts_bucket = "heimdall-artifacts-${var.aws_account_id}"
 }
 
 resource "aws_s3_bucket" "raw" {
@@ -12,8 +13,21 @@ resource "aws_s3_bucket" "athena" {
   bucket = local.athena_bucket
 }
 
+# Binaries and configuration that the reflector instance installs at boot.
+resource "aws_s3_bucket" "artifacts" {
+  bucket = local.artifacts_bucket
+}
+
+locals {
+  bucket_ids = {
+    raw       = aws_s3_bucket.raw.id
+    athena    = aws_s3_bucket.athena.id
+    artifacts = aws_s3_bucket.artifacts.id
+  }
+}
+
 resource "aws_s3_bucket_ownership_controls" "this" {
-  for_each = { raw = aws_s3_bucket.raw.id, athena = aws_s3_bucket.athena.id }
+  for_each = local.bucket_ids
   bucket   = each.value
   rule {
     object_ownership = "BucketOwnerEnforced"
@@ -21,7 +35,7 @@ resource "aws_s3_bucket_ownership_controls" "this" {
 }
 
 resource "aws_s3_bucket_public_access_block" "this" {
-  for_each                = { raw = aws_s3_bucket.raw.id, athena = aws_s3_bucket.athena.id }
+  for_each                = local.bucket_ids
   bucket                  = each.value
   block_public_acls       = true
   block_public_policy     = true
@@ -30,7 +44,7 @@ resource "aws_s3_bucket_public_access_block" "this" {
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
-  for_each = { raw = aws_s3_bucket.raw.id, athena = aws_s3_bucket.athena.id }
+  for_each = local.bucket_ids
   bucket   = each.value
   rule {
     apply_server_side_encryption_by_default {
@@ -40,7 +54,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
 }
 
 data "aws_iam_policy_document" "tls_only" {
-  for_each = { raw = aws_s3_bucket.raw.arn, athena = aws_s3_bucket.athena.arn }
+  for_each = { raw = aws_s3_bucket.raw.arn, athena = aws_s3_bucket.athena.arn, artifacts = aws_s3_bucket.artifacts.arn }
   statement {
     sid       = "DenyInsecureTransport"
     effect    = "Deny"
@@ -59,7 +73,7 @@ data "aws_iam_policy_document" "tls_only" {
 }
 
 resource "aws_s3_bucket_policy" "this" {
-  for_each   = { raw = aws_s3_bucket.raw.id, athena = aws_s3_bucket.athena.id }
+  for_each   = local.bucket_ids
   bucket     = each.value
   policy     = data.aws_iam_policy_document.tls_only[each.key].json
   depends_on = [aws_s3_bucket_public_access_block.this]

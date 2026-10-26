@@ -1,0 +1,112 @@
+#!/bin/bash
+# Installs heimdall-reflector and the cloud probe from the artifacts bucket.
+# Artifacts ${artifacts_hash}: a new hash replaces the instance.
+set -euxo pipefail
+
+REGION=${region}
+BUCKET=${bucket}
+
+dnf install -y amazon-cloudwatch-agent logrotate
+
+id heimdall >/dev/null 2>&1 || useradd --system --no-create-home --shell /sbin/nologin heimdall
+install -d -m 0755 /opt/heimdall/bin /opt/heimdall/catalog/regions
+install -d -m 0750 -o heimdall -g heimdall /etc/heimdall /var/log/heimdall
+
+aws s3 cp --region "$REGION" "s3://$BUCKET/reflector/bin/heimdall-reflector" /opt/heimdall/bin/heimdall-reflector
+aws s3 cp --region "$REGION" "s3://$BUCKET/reflector/bin/heimdall-probe" /opt/heimdall/bin/heimdall-probe
+chmod 0755 /opt/heimdall/bin/*
+aws s3 cp --region "$REGION" --recursive "s3://$BUCKET/reflector/catalog/" /opt/heimdall/catalog/
+aws s3 cp --region "$REGION" "s3://$BUCKET/reflector/probe.yaml" /etc/heimdall/probe.yaml
+
+umask 077
+aws ssm get-parameter --region "$REGION" --name "${token_parameter}" --with-decryption \
+  --query Parameter.Value --output text > /etc/heimdall/upload.token
+umask 022
+chown heimdall:heimdall /etc/heimdall/upload.token /etc/heimdall/probe.yaml
+
+# systemd-resolved holds 127.0.0.53:53, so the whoami server binds the
+# private address that the Elastic IP maps to.
+IMDS_TOKEN=$(curl -sf -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+PRIVATE_IP=$(curl -sf -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
+echo "DNS_ADDR=$PRIVATE_IP:53" > /etc/heimdall/reflector.env
+
+cat > /etc/systemd/system/heimdall-reflector.service <<'EOF'
+[Unit]
+Description=heimdall reflector (STAMP, TCP, whoami DNS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=heimdall
+EnvironmentFile=/etc/heimdall/reflector.env
+ExecStart=/opt/heimdall/bin/heimdall-reflector -dns $${DNS_ADDR} -zone ${zone} -ns ${ns} -hostmaster ${hostmaster}
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+Restart=always
+RestartSec=2
+StandardOutput=append:/var/log/heimdall/reflector.log
+StandardError=append:/var/log/heimdall/reflector.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/heimdall-probe.service <<'EOF'
+[Unit]
+Description=heimdall probe (cloud control measurements)
+After=network-online.target heimdall-reflector.service
+Wants=network-online.target
+
+[Service]
+User=heimdall
+ExecStart=/opt/heimdall/bin/heimdall-probe run -config /etc/heimdall/probe.yaml
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/heimdall/probe.log
+StandardError=append:/var/log/heimdall/probe.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/logrotate.d/heimdall <<'EOF'
+/var/log/heimdall/*.log {
+  daily
+  rotate 3
+  compress
+  missingok
+  notifempty
+  copytruncate
+}
+EOF
+
+cat > /opt/aws/amazon-cloudwatch-agent/etc/heimdall.json <<'EOF'
+{
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {"file_path": "/var/log/heimdall/reflector.log", "log_group_name": "${log_group}", "log_stream_name": "{instance_id}/reflector"},
+          {"file_path": "/var/log/heimdall/probe.log", "log_group_name": "${log_group}", "log_stream_name": "{instance_id}/probe"},
+          {"file_path": "/var/log/cloud-init-output.log", "log_group_name": "${log_group}", "log_stream_name": "{instance_id}/cloud-init"}
+        ]
+      }
+    }
+  }
+}
+EOF
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/heimdall.json
+
+systemctl daemon-reload
+systemctl enable --now heimdall-reflector.service heimdall-probe.service

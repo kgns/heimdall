@@ -126,8 +126,12 @@ func printDNS(cfg config.Config) {
 	for _, s := range d.DoH {
 		layers = append(layers, fmt.Sprintf("doh %s %s", s.ID, s.IP))
 	}
+	ids := append([]string(nil), d.Identity.Names...)
+	if d.Identity.Zone != "" {
+		ids = append([]string{"*." + d.Identity.Zone}, ids...)
+	}
 	fmt.Printf("dns probes every %v: %s; names %v; identity %v every %v\n",
-		d.Interval, strings.Join(layers, ", "), d.Names, d.Identity.Names, d.Identity.Interval)
+		d.Interval, strings.Join(layers, ", "), d.Names, ids, d.Identity.Interval)
 }
 
 // resolveAll resolves every hostname target once, as the probe would at

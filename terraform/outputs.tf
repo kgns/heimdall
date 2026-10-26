@@ -27,3 +27,11 @@ output "grafana_admin_password_parameter" {
   description = "SSM SecureString with the password of the Grafana user admin."
   value       = aws_ssm_parameter.grafana_admin_password.name
 }
+
+output "reflector_ip" {
+  value = aws_eip.reflector.public_ip
+}
+
+output "reflector_host" {
+  value = local.reflector_domain
+}

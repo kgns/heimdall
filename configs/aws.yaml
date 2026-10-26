@@ -1,0 +1,52 @@
+# heimdall-probe on the reflector instance in eu-central-1. It measures the
+# same catalog as the CPE from inside AWS, as a control: a service that
+# degrades from both places has a problem of its own; one that degrades only
+# from the CPE points at the access network or its peering.
+device: aws-euc1
+
+runtime:
+  gomaxprocs: 2
+  memory_limit: 128MiB
+  nice: 0
+
+scheduler:
+  max_pps: 150
+  burst: 20
+
+dns:
+  local: true
+  upstreams: false
+  uncached_zone: w.lat.kgns.dev
+  identity:
+    zone: w.lat.kgns.dev
+
+targets:
+  - {id: aws-hop1,       category: infra, service: aws-hop,    ip: 1.1.1.1, ttl: 1}
+  - {id: aws-hop2,       category: infra, service: aws-hop,    ip: 1.1.1.1, ttl: 2}
+  - {id: aws-hop3,       category: infra, service: aws-hop,    ip: 1.1.1.1, ttl: 3}
+  - {id: cloudflare-dns, category: infra, service: cloudflare, ip: 1.1.1.1}
+  - {id: google-dns,     category: infra, service: google,     ip: 8.8.8.8}
+  - {id: quad9-dns,      category: infra, service: quad9,      ip: 9.9.9.9}
+
+catalog:
+  path: /opt/heimdall/catalog/targets.yaml
+  regions: [tr]
+
+output:
+  jsonl:
+    enabled: false
+
+upload:
+  enabled: true
+  url: https://ingest.lat.kgns.dev/v1/batch
+  token_file: /etc/heimdall/upload.token
+
+collectors:
+  wan:
+    interval: 10s
+  cpu:
+    interval: 10s
+  lan:
+    enabled: false
+  processes:
+    interval: 0s

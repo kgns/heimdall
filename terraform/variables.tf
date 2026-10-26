@@ -35,7 +35,7 @@ variable "custom_domain" {
 variable "devices" {
   description = "Device IDs that may upload. Each needs a token digest in SSM; see scripts/new-device-token."
   type        = list(string)
-  default     = ["ex7501-home"]
+  default     = ["ex7501-home", "aws-euc1"]
 }
 
 variable "raw_retention_days" {
