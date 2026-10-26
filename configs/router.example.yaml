@@ -82,8 +82,22 @@ output:
   jsonl:                 # local debug copy; keep it on tmpfs, never on flash
     enabled: true
     dir: /var/tmp/heimdall
-    max_file_size: 4MiB
-    max_files: 3
+    max_file_size: 2MiB
+    max_files: 2
+
+# Upload to the ingest API. The token file holds the device's bearer token
+# (scripts/new-device-token creates one); keep it mode 0600.
+upload:
+  enabled: false
+  url: https://ingest.lat.kgns.dev/v1/batch
+  token_file: /misc/heimdall/upload.token
+  interval: 10s
+  timeout: 15s
+  buffer: 16MiB          # held in memory during outages, oldest dropped first
+  max_batch: 2000
+  max_batch_bytes: 3MiB
+  heartbeat: 60s
+  drain_on_stop: 5s
 
 # Context recorded next to the measurements. A zero interval disables a
 # collector.

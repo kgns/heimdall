@@ -38,6 +38,25 @@ type Config struct {
 	SelfMetrics SelfMetrics `yaml:"self_metrics"`
 	NetWatch    NetWatch    `yaml:"netwatch"`
 	Collectors  Collectors  `yaml:"collectors"`
+	Upload      Upload      `yaml:"upload"`
+}
+
+// Upload sends samples to the ingest API.
+type Upload struct {
+	Enabled bool   `yaml:"enabled"`
+	URL     string `yaml:"url"`
+	// TokenFile holds the device's bearer token; keep it mode 0600.
+	TokenFile string        `yaml:"token_file"`
+	Interval  time.Duration `yaml:"interval"`
+	Timeout   time.Duration `yaml:"timeout"`
+	// Buffer caps the samples held in memory while the API is unreachable;
+	// the oldest are dropped first.
+	Buffer        ByteSize      `yaml:"buffer"`
+	MaxBatch      int           `yaml:"max_batch"`
+	MaxBatchBytes ByteSize      `yaml:"max_batch_bytes"`
+	Heartbeat     time.Duration `yaml:"heartbeat"`
+	// DrainOnStop is how long shutdown waits to send what is buffered.
+	DrainOnStop time.Duration `yaml:"drain_on_stop"`
 }
 
 // Collectors configures the context signals recorded next to the
@@ -265,7 +284,7 @@ func Default() Config {
 			Identity: Identity{Interval: time.Minute, Names: []string{"whoami.ds.akahelp.net", "o-o.myaddr.l.google.com"}},
 		},
 		Output: Output{JSONL: JSONL{
-			Enabled: true, Dir: "/var/tmp/heimdall", MaxFileSize: 4 * MiB, MaxFiles: 3,
+			Enabled: false, Dir: "/var/tmp/heimdall", MaxFileSize: 4 * MiB, MaxFiles: 3,
 		}},
 		SelfMetrics: SelfMetrics{Interval: time.Minute},
 		NetWatch:    NetWatch{Interval: 10 * time.Second},
@@ -278,6 +297,11 @@ func Default() Config {
 			},
 			Processes: Processes{Interval: 30 * time.Second, Names: []string{"dnsmasq", "dnscrypt-proxy"}},
 			Clock:     Clock{Interval: time.Minute, Server: "time.cloudflare.com", Timeout: 3 * time.Second},
+		},
+		Upload: Upload{
+			TokenFile: "/misc/heimdall/upload.token", Interval: 10 * time.Second, Timeout: 15 * time.Second,
+			Buffer: 16 * MiB, MaxBatch: 2000, MaxBatchBytes: 3 * MiB, Heartbeat: time.Minute,
+			DrainOnStop: 5 * time.Second,
 		},
 	}
 }
@@ -545,6 +569,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	c.validateCollectors(bad)
+	c.validateUpload(bad)
 	if c.SelfMetrics.Interval < time.Second {
 		bad("self_metrics.interval must be at least 1s")
 	}
@@ -665,6 +690,45 @@ func (c *Config) validateCollectors(bad func(string, ...any)) {
 		if cl.Timeout <= 0 || cl.Timeout > 10*time.Second {
 			bad("collectors.clock.timeout must be in (0, 10s]")
 		}
+	}
+}
+
+func (c *Config) validateUpload(bad func(string, ...any)) {
+	u := c.Upload
+	if !u.Enabled {
+		return
+	}
+	if p, err := url.Parse(u.URL); err != nil || p.Scheme != "https" || p.Host == "" {
+		bad("upload.url %q must be https://host/path", u.URL)
+	}
+	if u.TokenFile == "" {
+		bad("upload.token_file is required")
+	}
+	if u.Interval < time.Second {
+		bad("upload.interval must be at least 1s")
+	}
+	if u.Timeout <= 0 || u.Timeout > time.Minute {
+		bad("upload.timeout must be in (0, 1m]")
+	}
+	if u.MaxBatch < 1 || u.MaxBatch > 20000 {
+		bad("upload.max_batch must be between 1 and 20000")
+	}
+	if u.MaxBatchBytes < 64*KiB || u.MaxBatchBytes > 12*MiB {
+		bad("upload.max_batch_bytes must be between 64KiB and 12MiB")
+	}
+	if u.Buffer < u.MaxBatchBytes {
+		bad("upload.buffer must be at least upload.max_batch_bytes")
+	}
+	// The buffer lives on the Go heap; leave room for everything else under
+	// the soft limit, or the runtime would collect garbage continuously.
+	if lim := c.Runtime.MemoryLimit; lim > 0 && u.Buffer > lim-24*MiB {
+		bad("upload.buffer %s leaves less than 24MiB under runtime.memory_limit %s", u.Buffer, lim)
+	}
+	if u.Heartbeat < 10*time.Second {
+		bad("upload.heartbeat must be at least 10s")
+	}
+	if u.DrainOnStop < 0 || u.DrainOnStop > time.Minute {
+		bad("upload.drain_on_stop must be between 0 and 1m")
 	}
 }
 

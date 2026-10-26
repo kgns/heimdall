@@ -55,9 +55,20 @@ deploy)
 	need_socket
 	bin="$ROOT/bin/linux-$ARCH/heimdall-probe"
 	[ -x "$bin" ] || { echo "missing $bin; run make build-$ARCH" >&2; exit 1; }
+	# configs/local/router.yaml (gitignored) carries deployment-specific
+	# values such as the ingest URL; the example is the fallback.
+	cfg="$ROOT/configs/local/router.yaml"
+	[ -f "$cfg" ] || cfg="$ROOT/configs/router.example.yaml"
 	r "mkdir -p $REMOTE/catalog $REMOTE/scripts"
 	r "cat > $REMOTE/heimdall-probe.new && chmod 755 $REMOTE/heimdall-probe.new" < "$bin"
-	r "cat > $REMOTE/config.yaml" < "$ROOT/configs/router.example.yaml"
+	r "cat > $REMOTE/config.yaml" < "$cfg"
+	device="$(sed -n 's/^device: *//p' "$cfg" | head -1)"
+	if [ -n "$device" ] && [ -f "$ROOT/configs/local/$device.token" ]; then
+		r "umask 077 && cat > $REMOTE/upload.token" < "$ROOT/configs/local/$device.token"
+		echo "config $(basename "$cfg"), upload token for $device installed"
+	else
+		echo "config $(basename "$cfg"), no upload token for '$device'"
+	fi
 	tar -C "$ROOT/catalog" -cf - . | r "tar -C $REMOTE/catalog -xf -"
 	tar -C "$ROOT/scripts/router" -cf - . | r "tar -C $REMOTE/scripts -xf -"
 	r "mv $REMOTE/heimdall-probe.new $REMOTE/heimdall-probe && $REMOTE/heimdall-probe version"

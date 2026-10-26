@@ -1,12 +1,18 @@
 package app
 
 import (
+	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -133,6 +139,7 @@ func testHost(t *testing.T, conn icmp.Conn, mem *sample.MemorySink) Host {
 func TestRunEmitsSamples(t *testing.T) {
 	cfg := config.Default()
 	cfg.DNS.Enabled = false
+	cfg.Output.JSONL.Enabled = true
 	cfg.Output.JSONL.Dir = t.TempDir()
 	cfg.ICMP.Interval = 100 * time.Millisecond
 	cfg.ICMP.Timeout = 150 * time.Millisecond
@@ -268,6 +275,89 @@ func TestRunSkipsTTLTargetsWithoutRawSocket(t *testing.T) {
 	}
 	if unsupported != 1 || cf == 0 {
 		t.Fatalf("unsupported events %d, cf samples %d", unsupported, cf)
+	}
+}
+
+func TestRunUploads(t *testing.T) {
+	var mu sync.Mutex
+	kinds := map[string]int{}
+	var envelopes []map[string]any
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var env map[string]any
+		if err := json.NewDecoder(zr).Decode(&env); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for _, s := range env["samples"].([]any) {
+			m := s.(map[string]any)
+			k := m["kind"].(string)
+			if k == "event" {
+				k += ":" + m["extra"].(map[string]any)["event"].(string)
+			}
+			kinds[k]++
+		}
+		delete(env, "samples")
+		envelopes = append(envelopes, env)
+		w.Write([]byte(`{"accepted":1}`))
+	}))
+	defer srv.Close()
+
+	tokenFile := filepath.Join(t.TempDir(), "upload.token")
+	os.WriteFile(tokenFile, []byte("test-token\n"), 0o600)
+
+	cfg := config.Default()
+	cfg.DNS.Enabled = false
+	cfg.Output.JSONL.Enabled = false
+	cfg.ICMP.Interval = 100 * time.Millisecond
+	cfg.Collectors.LAN.Enabled = false
+	cfg.Collectors.Clock.Interval = 0
+	cfg.Targets = []config.Target{{ID: "cf", Category: "infra", Service: "cloudflare", IP: "1.1.1.1"}}
+	cfg.Upload = config.Upload{
+		Enabled: true, URL: srv.URL + "/v1/batch", TokenFile: tokenFile, Interval: time.Second, Timeout: 5 * time.Second,
+		Buffer: 4 * config.MiB, MaxBatch: 1000, MaxBatchBytes: config.MiB, Heartbeat: 10 * time.Second, DrainOnStop: 5 * time.Second,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	h := testHost(t, newEchoConn(time.Millisecond), &sample.MemorySink{})
+	h.UploadClient = srv.Client()
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	if err := Run(ctx, cfg, "test", h, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if kinds["event:start"] != 1 || kinds["event:stop"] != 1 || kinds["icmp"] < 10 || kinds["heartbeat"] < 1 {
+		t.Fatalf("uploaded kinds %v", kinds)
+	}
+	if len(envelopes) == 0 || envelopes[0]["device"] != "ex7501-b0" || envelopes[0]["run_id"] == "" {
+		t.Fatalf("envelopes %v", envelopes)
+	}
+}
+
+func TestRunFailsWithoutToken(t *testing.T) {
+	cfg := config.Default()
+	cfg.DNS.Enabled = false
+	cfg.Output.JSONL.Enabled = false
+	cfg.Upload.Enabled = true
+	cfg.Upload.URL = "https://ingest.example.com/v1/batch"
+	cfg.Upload.TokenFile = filepath.Join(t.TempDir(), "missing")
+	err := Run(context.Background(), cfg, "test", testHost(t, newEchoConn(0), &sample.MemorySink{}), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err == nil || !strings.Contains(err.Error(), "upload token") {
+		t.Fatalf("err %v", err)
 	}
 }
 

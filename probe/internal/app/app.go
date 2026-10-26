@@ -8,9 +8,11 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"net/netip"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/kgns/heimdall/probe/internal/collectors/self"
@@ -22,6 +24,7 @@ import (
 	"github.com/kgns/heimdall/probe/internal/scheduler"
 	"github.com/kgns/heimdall/probe/internal/sysinfo"
 	"github.com/kgns/heimdall/probe/internal/target"
+	"github.com/kgns/heimdall/probe/internal/uploader"
 )
 
 // Host is the probe's access to the machine. Tests replace it.
@@ -34,6 +37,8 @@ type Host struct {
 	Now        func() time.Time
 	Stdout     io.Writer
 	ExtraSinks []sample.Sink
+	// UploadClient replaces the uploader's HTTP client, for tests.
+	UploadClient *http.Client
 }
 
 // LiveHost returns a Host for the real machine.
@@ -71,6 +76,17 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 			return fmt.Errorf("local sample file: %w", err)
 		}
 		sinks = append(sinks, rf)
+	}
+	var upBuf *uploader.Buffer
+	var token string
+	if cfg.Upload.Enabled {
+		t, err := readToken(cfg.Upload.TokenFile, log)
+		if err != nil {
+			return err
+		}
+		token = t
+		upBuf = uploader.NewBuffer(int(cfg.Upload.Buffer))
+		sinks = append(sinks, upBuf)
 	}
 	rec := sample.NewRecorder(device, h.Now, sinks...)
 	defer rec.Close()
@@ -223,8 +239,41 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 			}
 		},
 	})
+	var up *uploader.Uploader
+	if upBuf != nil {
+		up, err = uploader.New(upBuf, uploader.Options{
+			URL: cfg.Upload.URL, Token: token, Device: device, ProbeVersion: version,
+			Interval: cfg.Upload.Interval, Timeout: cfg.Upload.Timeout,
+			MaxBatch: cfg.Upload.MaxBatch, MaxBatchBytes: int(cfg.Upload.MaxBatchBytes),
+			MinBackoff: 5 * time.Second, MaxBackoff: 5 * time.Minute,
+			ClockOffset: coll.MeasuredClockOffset, Allowed: nw.Allowed, Lookup: h.Lookup,
+			HTTPClient: h.UploadClient, Log: log, DrainAfterStop: cfg.Upload.DrainOnStop,
+		})
+		if err != nil {
+			return fmt.Errorf("upload: %w", err)
+		}
+		sched.Add(scheduler.Job{
+			Name: "heartbeat", Interval: cfg.Upload.Heartbeat, NoJitter: true,
+			Run: func(context.Context) {
+				rec.Emit(sample.Sample{Kind: sample.KindHeartbeat, Status: sample.StatusOK, Extra: map[string]any{
+					"version":     version,
+					"run_id":      up.RunID(),
+					"uptime_s":    int64(h.Now().Sub(started).Seconds()),
+					"upload":      up.Status(),
+					"buffer":      upBuf.Stats(),
+					"resolver_id": dnsProbes.ResolverID(),
+					"lan_clients": coll.LANClients(),
+				}})
+			},
+		})
+	}
+	runID := ""
+	if up != nil {
+		runID = up.RunID()
+	}
+
 	selfc := self.New(h.FS, h.Now, func() map[string]any {
-		return map[string]any{
+		x := map[string]any{
 			"icmp":            pinger.Stats(),
 			"sched":           sched.Totals(),
 			"samples":         rec.Emitted(),
@@ -234,6 +283,10 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 			"clock_offset_ms": sample.Millis(coll.ClockOffset()),
 			"resolver_id":     dnsProbes.ResolverID(),
 		}
+		if up != nil {
+			x["upload"], x["buffer"] = up.Status(), upBuf.Stats()
+		}
+		return x
 	})
 	sched.Add(scheduler.Job{
 		Name:     "self",
@@ -259,10 +312,26 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		"wan_iface":    wan.Iface,
 		"gateway":      addrString(wan.Gateway),
 		"wan_ipv4":     addrStrings(wan.WANIPv4),
+		"run_id":       runID,
+		"upload":       cfg.Upload.Enabled,
 	}})
 	log.Info("probe started", "device", device, "version", version, "icmp_mode", pinger.Mode(),
 		"targets", len(targets), "jobs", jobCounts, "probe_rate", cfg.ProbeRate(),
-		"wan_iface", wan.Iface, "gateway", wan.Gateway, "resolver", dnsProbes.ResolverID())
+		"wan_iface", wan.Iface, "gateway", wan.Gateway, "resolver", dnsProbes.ResolverID(),
+		"upload", cfg.Upload.Enabled, "run_id", runID)
+
+	// The uploader outlives the scheduler so that the stop event is sent.
+	upCtx, stopUpload := context.WithCancel(context.Background())
+	defer stopUpload()
+	upDone := make(chan struct{})
+	if up != nil {
+		go func() {
+			defer close(upDone)
+			up.Run(upCtx)
+		}()
+	} else {
+		close(upDone)
+	}
 
 	sched.Run(ctx)
 
@@ -272,8 +341,35 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		"icmp":     pinger.Stats(),
 		"sched":    sched.Stats(),
 	}})
-	log.Info("probe stopped", "samples", rec.Emitted())
+	stopUpload()
+	<-upDone
+	if up != nil {
+		log.Info("probe stopped", "samples", rec.Emitted(), "upload", up.Status(), "unsent", upBuf.Stats().Samples)
+	} else {
+		log.Info("probe stopped", "samples", rec.Emitted())
+	}
 	return nil
+}
+
+// readToken reads the upload token and warns when the file is readable by
+// other users.
+func readToken(path string, log *slog.Logger) (string, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("upload token: %w", err)
+	}
+	if st.Mode().Perm()&0o077 != 0 {
+		log.Warn("upload token file is readable by other users", "path", path, "mode", st.Mode().Perm())
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("upload token: %w", err)
+	}
+	t := strings.TrimSpace(string(b))
+	if t == "" {
+		return "", fmt.Errorf("upload token file %s is empty", path)
+	}
+	return t, nil
 }
 
 func icmpSample(t *target.Target, dst netip.Addr, r icmp.Result) sample.Sample {

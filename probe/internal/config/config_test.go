@@ -36,6 +36,7 @@ targets:
 output:
   stdout: true
   jsonl:
+    enabled: true
     max_file_size: 1MiB
 dns:
   enabled: false
@@ -116,7 +117,10 @@ func TestParseRejects(t *testing.T) {
 		"clock server":  "collectors:\n  clock:\n    server: 'not a host'\n",
 		"clock private": "collectors:\n  clock:\n    server: 192.168.1.1\n",
 		"procs fast":    "collectors:\n  processes:\n    interval: 1s\n",
-		"jsonl dir":     "output:\n  jsonl:\n    dir: ''\n",
+		"upload http":   "upload:\n  enabled: true\n  url: http://ingest.example.com/v1/batch\n",
+		"upload buffer": "upload:\n  enabled: true\n  url: https://ingest.example.com/v1/batch\n  buffer: 40MiB\n",
+		"upload batch":  "upload:\n  enabled: true\n  url: https://ingest.example.com/v1/batch\n  max_batch: 0\n",
+		"jsonl dir":     "output:\n  jsonl:\n    enabled: true\n    dir: ''\n",
 		"nice":          "runtime:\n  nice: 25\n",
 	}
 	for name, in := range tests {
@@ -166,6 +170,16 @@ targets:
 	want := 1 + 0.2 + 1.0/60 + 5.0/30 + 2.0/60 + 32.0/5 + 1.0/60
 	if r := c.ProbeRate(); r < want-1e-9 || r > want+1e-9 {
 		t.Fatalf("rate %v, want %v", r, want)
+	}
+}
+
+func TestUploadConfig(t *testing.T) {
+	c, err := Parse([]byte("runtime:\n  memory_limit: 112MiB\nupload:\n  enabled: true\n  url: https://ingest.example.com/v1/batch\n  buffer: 64MiB\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Upload.Buffer != 64*MiB || c.Upload.MaxBatch != 2000 || c.Upload.TokenFile != "/misc/heimdall/upload.token" {
+		t.Fatalf("%+v", c.Upload)
 	}
 }
 

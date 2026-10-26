@@ -27,8 +27,9 @@ type collectors struct {
 	lookup resolve.LookupFunc
 
 	// clockOffset is the last measured offset of the local clock in
-	// nanoseconds, or 0 before the first measurement.
+	// nanoseconds; hasOffset is set once one was measured.
 	clockOffset atomic.Int64
+	hasOffset   atomic.Bool
 	ntpPort     uint16
 
 	lanMu      sync.Mutex
@@ -56,6 +57,11 @@ func newCollectors(e *env, fsys fs.FS, nw *netwatch.Watcher, lookup resolve.Look
 
 // ClockOffset returns the last measured local clock offset.
 func (c *collectors) ClockOffset() time.Duration { return time.Duration(c.clockOffset.Load()) }
+
+// MeasuredClockOffset returns the last offset and whether one was measured.
+func (c *collectors) MeasuredClockOffset() (time.Duration, bool) {
+	return c.ClockOffset(), c.hasOffset.Load()
+}
 
 // LANClients returns the number of LAN clients currently tracked.
 func (c *collectors) LANClients() int {
@@ -376,5 +382,6 @@ func (c *collectors) checkClock(ctx context.Context) {
 	s.RTTms = sample.RTT(r.Delay)
 	s.Extra = map[string]any{"offset_ms": sample.Millis(r.Offset), "stratum": r.Stratum, "ref": r.RefID}
 	c.clockOffset.Store(int64(r.Offset))
+	c.hasOffset.Store(true)
 	c.rec.Emit(s)
 }
