@@ -18,3 +18,12 @@ output "glue_table" {
 output "firehose_stream" {
   value = aws_kinesis_firehose_delivery_stream.samples.name
 }
+
+output "grafana_url" {
+  value = "https://${local.grafana_domain}/"
+}
+
+output "grafana_admin_password_parameter" {
+  description = "SSM SecureString with the password of the Grafana user admin."
+  value       = aws_ssm_parameter.grafana_admin_password.name
+}

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Build the Grafana image for linux/arm64 and push it to ECR. Called by
+# terraform (terraform/grafana.tf) when anything under grafana/ changes.
+#   scripts/grafana-image <repository-url> <tag>
+set -euo pipefail
+repo="$1"
+tag="$2"
+PROFILE="${AWS_PROFILE_HEIMDALL:-kgns}"
+REGION="${AWS_REGION_HEIMDALL:-eu-central-1}"
+case "$repo" in
+*.dkr.ecr."$REGION".amazonaws.com/heimdall-*) ;;
+*)
+	echo "refusing to push to $repo" >&2
+	exit 1
+	;;
+esac
+root="$(cd "$(dirname "$0")/.." && pwd)"
+aws ecr get-login-password --profile "$PROFILE" --region "$REGION" |
+	docker login --username AWS --password-stdin "${repo%%/*}" >/dev/null
+# Single-platform image without attestations, so ECR holds one manifest per tag.
+docker buildx build --platform linux/arm64 --provenance=false --sbom=false \
+	--tag "$repo:$tag" --push "$root/grafana"

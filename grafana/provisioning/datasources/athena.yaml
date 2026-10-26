@@ -1,0 +1,15 @@
+apiVersion: 1
+
+datasources:
+  - name: Athena
+    uid: athena
+    type: grafana-athena-datasource
+    isDefault: true
+    editable: false
+    jsonData:
+      # Credentials come from the ECS task role.
+      authType: default
+      defaultRegion: eu-central-1
+      catalog: AwsDataCatalog
+      database: heimdall
+      workgroup: heimdall

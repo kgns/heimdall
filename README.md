@@ -10,7 +10,7 @@ probe/      Go module: heimdall-probe (runs on the CPE) and, later, heimdall-ref
 catalog/    measurement targets by category, plus regional packs
 cloud/      Python ingest, detection and analysis code
 terraform/  AWS and Cloudflare infrastructure
-grafana/    local Grafana with dashboards as code
+grafana/    Grafana image: Athena data source and dashboards as code
 zyee/       Zyxel Execution Environment packaging
 scripts/    router and maintenance helpers
 docs/       design notes and runbook
@@ -106,3 +106,39 @@ It reports the default route and WAN interface, routes through other
 interfaces that are excluded from probing, IPv6 availability, the effective
 DNS upstreams (reconstructed from the running dnsmasq's configuration), live
 lookups through each DNS layer, and which ICMP socket mode is available.
+
+## Dashboards
+
+Grafana runs on ECS Fargate (`terraform/grafana.tf`) at
+https://heimdall.kgns.dev/, behind Cloudflare. Log in as `admin`; the
+password is in the SSM SecureString `/heimdall/grafana/admin_password`:
+
+```sh
+aws ssm get-parameter --profile kgns --region eu-central-1 \
+  --name /heimdall/grafana/admin_password --with-decryption \
+  --query Parameter.Value --output text
+```
+
+The dashboards are generated from `grafana/gen_dashboards.py`:
+
+```sh
+python3 grafana/gen_dashboards.py    # rewrites grafana/dashboards/*.json
+```
+
+Commit the JSON with the generator. `terraform apply` rebuilds and pushes
+the image (`scripts/grafana-image`, needs Docker with buildx) whenever a
+file under `grafana/` changes, and the service then rolls to the new task.
+Grafana keeps no state between tasks: users, preferences and edits made in
+the UI are lost on every deploy, so change dashboards in the generator.
+
+| dashboard | answers |
+|---|---|
+| overview | is a problem general or limited to some services? Per-service summary, latency relative to each destination's own median, ISP hops |
+| service | what happens on one service's paths? Per-destination RTT and loss, HTTPS phases, edges, failures, destination changes |
+| network | access network, DNS, LAN and probe health |
+
+The record's address is set by `heimdall-dnssync` (`terraform/dnssync.tf`)
+because the task's public IP changes on each deploy. The name is a direct
+child of the zone: Cloudflare's Universal SSL certificate covers only
+`kgns.dev` and `*.kgns.dev`, so a proxied name under `lat.kgns.dev` gets no
+edge certificate.

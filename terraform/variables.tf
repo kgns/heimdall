@@ -27,7 +27,7 @@ variable "subdomain" {
 }
 
 variable "custom_domain" {
-  description = "Serve the ingest API at ingest.<subdomain>.<zone>. Needs CLOUDFLARE_API_TOKEN; without it the execute-api URL is used."
+  description = "Serve the ingest API at ingest.<subdomain>.<zone>. Needs CLOUDFLARE_API_TOKEN; without it the execute-api URL is used. Grafana (grafana.tf) always needs Cloudflare."
   type        = bool
   default     = true
 }
