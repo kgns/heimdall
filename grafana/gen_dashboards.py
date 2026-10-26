@@ -44,6 +44,8 @@ def sql(text: str, **subs: str) -> str:
     # Expanded first because it contains {R}.
     if "{INC}" in text:
         text = text.replace("{INC}", INCIDENTS)
+    if "{D}" in text or "{ASN}" in text:
+        text = text.replace("{D}", DAYS).replace("{ASN}", AS_NAMES)
     subs = {"RA": RANGE_ALL, "R": RANGE, "B": BUCKET, "S": SERVICES, "CLOUD": CLOUD_DEVICE, **subs}
     for k, v in subs.items():
         text = text.replace("{" + k + "}", v)
@@ -988,9 +990,106 @@ def network() -> dict[str, Any]:
     return dashboard("heimdall-network", "heimdall / network", p, [DEVICE])
 
 
+DAYS = "device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd')"
+AS_NAMES = """
+  (SELECT asn, arbitrary(as_name) AS as_name FROM heimdall.ip_asn
+   WHERE dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') GROUP BY asn)
+"""
+
+
+def daily() -> dict[str, Any]:
+    """Results of the daily analysis (heimdall_cloud.analytics), one row per
+    day and item; the time range selects the days."""
+    L = Layout()
+    p = [
+        L.place(
+            table(
+                "Busy-hour inflation",
+                """
+                SELECT service, category, count(*) AS days,
+                  avg(night_p50) AS night_p50, avg(busy_p50) AS busy_p50, avg(busy_inflation) AS inflation,
+                  max(busy_inflation) AS worst_day, avg(busy_loss_pct) AS busy_loss_pct, avg(jitter_ms) AS jitter_ms
+                FROM heimdall.daily_service
+                WHERE {D} AND kind = 'icmp' AND category <> 'infra'
+                GROUP BY service, category ORDER BY inflation DESC NULLS LAST
+                """,
+                "Median RTT 20-24h local over 03-07h local. Above about 1.2, the evening load is "
+                "slowing that service down: an access link, aggregation or peering link near capacity.",
+                units={"night_p50": "ms", "busy_p50": "ms", "busy_loss_pct": "percent", "jitter_ms": "ms"},
+            ),
+            12,
+            10,
+        ),
+        L.place(
+            table(
+                "Who is to blame: degraded hours",
+                """
+                SELECT service, count_if(attribution = 'access_or_path') AS isp_side_hours,
+                  count_if(attribution = 'service') AS service_side_hours,
+                  count_if(attribution = 'no_control') AS no_control_hours, count(*) AS hours,
+                  max(cpe_ratio) AS worst_ratio
+                FROM heimdall.daily_compare
+                WHERE {D}
+                GROUP BY service
+                HAVING count_if(attribution IN ('access_or_path', 'service')) > 0
+                ORDER BY isp_side_hours DESC, service_side_hours DESC
+                """,
+                "Hours where the service's median was 30% above its best hour of the day. ISP side: the AWS "
+                "control saw no such rise. Service side: the control rose as well.",
+            ),
+            12,
+            10,
+        ),
+        L.place(
+            table(
+                "Where paths leave the ISP",
+                """
+                SELECT b.next_asn, n.as_name, count(DISTINCT b.target_id) AS targets,
+                  array_join(array_agg(DISTINCT b.service), ', ') AS services,
+                  approx_percentile(b.border_jump_ms, 0.5) AS jump_p50_ms, max(b.border_jump_ms) AS jump_max_ms
+                FROM heimdall.path_borders b LEFT JOIN {ASN} n ON n.asn = b.next_asn
+                WHERE b.{D} AND b.next_asn IS NOT NULL
+                GROUP BY b.next_asn, n.as_name ORDER BY targets DESC
+                """,
+                "The first network after the ISP on the most frequent traceroute path to each target, and "
+                "the latency added at that border. Transit networks with large jumps for nearby services "
+                "suggest missing or distant peering.",
+                units={"jump_p50_ms": "ms", "jump_max_ms": "ms"},
+            ),
+            12,
+            10,
+        ),
+        L.place(
+            table(
+                "Path borders per target",
+                """
+                SELECT b.dt, b.service, b.target_id, b.dst_ip, b.border_ip, b.next_asn, n.as_name,
+                  array_join(transform(b.as_path, a -> CAST(a AS varchar)), ' > ') AS as_path,
+                  b.last_home_rtt_ms, b.border_rtt_ms, b.border_jump_ms, b.paths, b.main_path_share, b.traces
+                FROM heimdall.path_borders b LEFT JOIN {ASN} n ON n.asn = b.next_asn
+                WHERE b.{D}
+                ORDER BY b.dt DESC, b.border_jump_ms DESC NULLS LAST
+                LIMIT 300
+                """,
+                units={
+                    "last_home_rtt_ms": "ms",
+                    "border_rtt_ms": "ms",
+                    "border_jump_ms": "ms",
+                    "main_path_share": "percentunit",
+                },
+            ),
+            12,
+            10,
+        ),
+    ]
+    d = dashboard("heimdall-daily", "heimdall / daily analysis", p, [DEVICE])
+    d["time"] = {"from": "now-7d", "to": "now"}
+    return d
+
+
 def main() -> None:
     OUT.mkdir(exist_ok=True)
-    for name, build in (("overview", overview), ("service", service), ("network", network)):
+    for name, build in (("overview", overview), ("service", service), ("network", network), ("daily", daily)):
         (OUT / f"{name}.json").write_text(json.dumps(build(), indent=2) + "\n")
 
 

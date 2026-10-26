@@ -58,3 +58,9 @@ variable "ingest_burst_limit" {
   type    = number
   default = 20
 }
+
+variable "analytics_backfill" {
+  description = "UTC days (YYYY-MM-DD) to run the daily analysis for during apply."
+  type        = list(string)
+  default     = []
+}

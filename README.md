@@ -172,3 +172,62 @@ bucket at boot. Run `make build-arm64` before `terraform apply`: a changed
 binary, catalog or config replaces the instance, which keeps its address.
 Logs go to the CloudWatch log group `/heimdall/reflector`, and Session
 Manager gives a shell. There is no SSH.
+
+## Discovery and traceroutes
+
+Catalog services can name discoverers that find the servers their traffic
+really goes to. The probe measures these as targets
+`<service>/<discoverer>/<n>`, and samples carry `extra.endpoint`.
+
+| discoverer | source | measured with |
+|---|---|---|
+| `youtube_cache` | `redirector.googlevideo.com/report_mapping`, cluster name mapped to `rr<n>---sn-*.googlevideo.com` | icmp, tcp |
+| `netflix_oca` | the fast.com API: Open Connect appliances for this line | icmp, tcp |
+| `steam_sdr` | Steam SDR config: relay POPs nearest to `discovery.lat/lon` | icmp |
+| `gamelift` | `gamelift-ping.<region>.api.aws` UDP 7770 beacons | udp |
+| `discord_voice` | `latency.discord.media/rtc`: nearest voice regions | tcp |
+| `stun` | the service's `stun` servers from the catalog | stun |
+
+ICMP traceroutes (`kind = 'trace'`, `extra.hops`) cover every destination
+in turn, so each one is traced about every 30 minutes.
+
+## Detection and alerts
+
+The probe detects anomalies itself (`internal/detect`). Each (target, kind,
+destination) series learns an hour-long baseline. Sustained deviations
+become `anomaly_start` / `anomaly_end` events. These are grouped into
+incidents (`incident_start` / `incident_update` / `incident_end`) with a
+scope and a likely cause:
+
+- `access_network`: the ISP hops, or a large share of all services at once
+- `path`: one service
+- `destination_change`: a service shortly after DNS moved it
+- `dns_latency`: DNS resolution slowed down
+- `tls_blocked`: TCP connects but TLS fails, typical of SNI filtering
+
+The ingest Lambda passes incident events to `heimdall-notifier`
+(`terraform/notify.tf`). The notifier keeps open incidents in the DynamoDB
+table `heimdall-incidents`. For a single-service incident on the CPE, it
+checks whether the AWS control probe has the same service open, which tells
+whether the problem is on the service's side or on the ISP's path. It posts
+to Slack once the webhook URL is stored:
+
+```sh
+aws ssm put-parameter --profile kgns --region eu-central-1 --type SecureString \
+  --name /heimdall/slack/webhook_url --value 'https://hooks.slack.com/services/...'
+```
+
+## Daily analysis
+
+`heimdall-analytics` (`terraform/analytics.tf`) runs at 00:30 UTC for the
+previous UTC day. It writes the tables `daily_service` (percentiles, jitter,
+busy-hour inflation), `daily_compare` (degraded hours, attributed to the ISP
+side or the service side using the AWS control), `ip_asn` (RIPEstat origin
+AS of traceroute hops) and `path_borders` (where each path leaves the ISP,
+the next AS, and the latency added at that border). It also writes a
+`summary` JSON per day under `derived/` in the raw bucket. The Grafana
+dashboard "heimdall / daily analysis" shows them. To run past days:
+
+```sh
+terraform apply -var 'analytics_backfill=["2026-10-26"]'
+```

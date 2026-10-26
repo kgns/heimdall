@@ -321,7 +321,7 @@ source = { editable = "." }
 [package.dev-dependencies]
 dev = [
     { name = "boto3" },
-    { name = "moto", extra = ["dynamodb", "ssm"] },
+    { name = "moto", extra = ["dynamodb", "s3", "ssm"] },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -331,7 +331,7 @@ dev = [
 [package.metadata.requires-dev]
 dev = [
     { name = "boto3", specifier = "==1.43.118" },
-    { name = "moto", extras = ["dynamodb", "firehose", "ssm"], specifier = "==5.2.4" },
+    { name = "moto", extras = ["dynamodb", "firehose", "s3", "ssm"], specifier = "==5.2.4" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "ruff", specifier = "==0.17.2" },
 ]
@@ -483,6 +483,10 @@ wheels = [
 dynamodb = [
     { name = "docker" },
     { name = "py-partiql-parser" },
+]
+s3 = [
+    { name = "py-partiql-parser" },
+    { name = "pyyaml" },
 ]
 ssm = [
     { name = "pyyaml" },

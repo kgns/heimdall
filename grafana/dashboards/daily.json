@@ -1,0 +1,351 @@
+{
+  "uid": "heimdall-daily",
+  "title": "heimdall / daily analysis",
+  "tags": [
+    "heimdall"
+  ],
+  "timezone": "browser",
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 41,
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "refresh": "",
+  "templating": {
+    "list": [
+      {
+        "name": "device",
+        "label": "device",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-athena-datasource",
+          "uid": "athena"
+        },
+        "query": {
+          "refId": "device",
+          "format": 1,
+          "rawSQL": "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'heartbeat'",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        },
+        "definition": "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'heartbeat'",
+        "refresh": 2,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "current": {}
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "type": "dashboards",
+      "tags": [
+        "heimdall"
+      ],
+      "asDropdown": false,
+      "title": "heimdall"
+    }
+  ],
+  "panels": [
+    {
+      "type": "table",
+      "title": "Busy-hour inflation",
+      "description": "Median RTT 20-24h local over 03-07h local. Above about 1.2, the evening load is slowing that service down: an access link, aggregation or peering link near capacity.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "night_p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "busy_p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "busy_loss_pct"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "jitter_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "SELECT service, category, count(*) AS days, avg(night_p50) AS night_p50, avg(busy_p50) AS busy_p50, avg(busy_inflation) AS inflation, max(busy_inflation) AS worst_day, avg(busy_loss_pct) AS busy_loss_pct, avg(jitter_ms) AS jitter_ms FROM heimdall.daily_service WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND kind = 'icmp' AND category <> 'infra' GROUP BY service, category ORDER BY inflation DESC NULLS LAST",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10
+      },
+      "id": 1
+    },
+    {
+      "type": "table",
+      "title": "Who is to blame: degraded hours",
+      "description": "Hours where the service's median was 30% above its best hour of the day. ISP side: the AWS control saw no such rise. Service side: the control rose as well.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "SELECT service, count_if(attribution = 'access_or_path') AS isp_side_hours, count_if(attribution = 'service') AS service_side_hours, count_if(attribution = 'no_control') AS no_control_hours, count(*) AS hours, max(cpe_ratio) AS worst_ratio FROM heimdall.daily_compare WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') GROUP BY service HAVING count_if(attribution IN ('access_or_path', 'service')) > 0 ORDER BY isp_side_hours DESC, service_side_hours DESC",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10
+      },
+      "id": 2
+    },
+    {
+      "type": "table",
+      "title": "Where paths leave the ISP",
+      "description": "The first network after the ISP on the most frequent traceroute path to each target, and the latency added at that border. Transit networks with large jumps for nearby services suggest missing or distant peering.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "jump_p50_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "jump_max_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "SELECT b.next_asn, n.as_name, count(DISTINCT b.target_id) AS targets, array_join(array_agg(DISTINCT b.service), ', ') AS services, approx_percentile(b.border_jump_ms, 0.5) AS jump_p50_ms, max(b.border_jump_ms) AS jump_max_ms FROM heimdall.path_borders b LEFT JOIN (SELECT asn, arbitrary(as_name) AS as_name FROM heimdall.ip_asn WHERE dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') GROUP BY asn) n ON n.asn = b.next_asn WHERE b.device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND b.next_asn IS NOT NULL GROUP BY b.next_asn, n.as_name ORDER BY targets DESC",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10
+      },
+      "id": 3
+    },
+    {
+      "type": "table",
+      "title": "Path borders per target",
+      "description": "",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "last_home_rtt_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "border_rtt_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "border_jump_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "main_path_share"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "SELECT b.dt, b.service, b.target_id, b.dst_ip, b.border_ip, b.next_asn, n.as_name, array_join(transform(b.as_path, a -> CAST(a AS varchar)), ' > ') AS as_path, b.last_home_rtt_ms, b.border_rtt_ms, b.border_jump_ms, b.paths, b.main_path_share, b.traces FROM heimdall.path_borders b LEFT JOIN (SELECT asn, arbitrary(as_name) AS as_name FROM heimdall.ip_asn WHERE dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') GROUP BY asn) n ON n.asn = b.next_asn WHERE b.device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') ORDER BY b.dt DESC, b.border_jump_ms DESC NULLS LAST LIMIT 300",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10
+      },
+      "id": 4
+    }
+  ]
+}

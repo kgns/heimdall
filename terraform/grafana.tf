@@ -269,7 +269,7 @@ data "aws_iam_policy_document" "grafana_task" {
   statement {
     sid       = "ReadSamples"
     actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.raw.arn}/raw/*"]
+    resources = ["${aws_s3_bucket.raw.arn}/raw/*", "${aws_s3_bucket.raw.arn}/derived/*"]
   }
   statement {
     sid       = "QueryResults"
