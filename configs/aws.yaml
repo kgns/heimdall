@@ -41,6 +41,9 @@ upload:
   url: https://ingest.lat.kgns.dev/v1/batch
   token_file: /etc/heimdall/upload.token
 
+detect:
+  access_services: [aws-hop]
+
 collectors:
   wan:
     interval: 10s

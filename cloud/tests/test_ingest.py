@@ -268,3 +268,34 @@ def test_lambda_handler_with_moto(monkeypatch):
         monkeypatch.setattr(ingest.ASNLookup, "_fetch", staticmethod(lambda url: {"data": {"asns": []}}))
         resp = ingest.lambda_handler(event(batch(samples=[sample(ts_ms=0)])), None)
         assert resp["statusCode"] == 200
+
+
+def test_incident_events_are_forwarded(ssm):
+    calls = []
+    h = handler(ssm)
+    h.notify = lambda device, events: calls.append((device, events))
+    inc = sample(
+        kind="event",
+        seq=2,
+        target_id=None,
+        dst_ip=None,
+        rtt_ms=None,
+        extra={"event": "incident_start", "incident_id": "abc", "scope": "service", "services": ["netflix"]},
+    )
+    other = sample(kind="event", seq=3, target_id=None, dst_ip=None, rtt_ms=None, extra={"event": "dst_change"})
+    resp = h(event(batch(samples=[sample(), inc, other])))
+    assert resp["statusCode"] == 200
+    [(device, events)] = calls
+    assert device == "ex7501-home" and len(events) == 1
+    assert events[0]["extra"]["incident_id"] == "abc" and events[0]["seq"] == 2
+
+    # A batch without incidents does not notify, and a failing notifier
+    # does not fail the ingest.
+    calls.clear()
+    assert h(event(batch()))["statusCode"] == 200 and not calls
+
+    def boom(device, events):
+        raise RuntimeError("lambda throttled")
+
+    h.notify = boom
+    assert h(event(batch(samples=[inc])))["statusCode"] == 200

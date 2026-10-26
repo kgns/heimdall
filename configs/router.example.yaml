@@ -54,6 +54,17 @@ trace:
   timeout: 2s
   gap: 20ms
 
+# On-probe detection. Each (target, kind, destination) series learns a
+# baseline of its per-minute median and loss over about an hour, after
+# warmup; minutes well above it become anomalies, and anomalies are grouped
+# into incidents (event incident_start/update/end) scoped to the access
+# network (access_services, or a large share of all services at once), one
+# service, or DNS. The cloud notifier posts them to Slack.
+detect:
+  enabled: true
+  warmup: 15m
+  access_services: [isp-hop, isp-gateway]
+
 # Discoverers named in the catalog find the servers a service really uses:
 # the YouTube and Netflix caches this line is mapped to, the nearest Steam
 # relays (by distance from lat/lon), Discord voice regions, GameLift ping

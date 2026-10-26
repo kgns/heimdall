@@ -41,6 +41,9 @@ TIME_SERIES, TABLE = 0, 1
 def sql(text: str, **subs: str) -> str:
     """Expands the placeholders and collapses whitespace. Values are fixed
     strings from this file or Grafana variables, never user input."""
+    # Expanded first because it contains {R}.
+    if "{INC}" in text:
+        text = text.replace("{INC}", INCIDENTS)
     subs = {"RA": RANGE_ALL, "R": RANGE, "B": BUCKET, "S": SERVICES, "CLOUD": CLOUD_DEVICE, **subs}
     for k, v in subs.items():
         text = text.replace("{" + k + "}", v)
@@ -207,6 +210,34 @@ GROUP BY 1, 2 ORDER BY 1
 """
 
 
+# One row per incident in the range, from its start, update and end events.
+INCIDENTS = """
+WITH e AS (
+  SELECT ts_ms, json_extract_scalar(extra, '$.event') AS ev, json_extract_scalar(extra, '$.incident_id') AS id,
+    json_extract_scalar(extra, '$.scope') AS scope, json_extract_scalar(extra, '$.cause') AS cause,
+    array_join(CAST(json_extract(extra, '$.services') AS array(varchar)), ', ') AS services,
+    CAST(json_extract_scalar(extra, '$.duration_s') AS bigint) AS duration_s,
+    CAST(json_extract_scalar(extra, '$.anomalous_series') AS integer) AS series,
+    json_extract_scalar(extra, '$.targets[0].target_id') AS top_target,
+    CAST(json_extract_scalar(extra, '$.targets[0].current_ms') AS double) AS top_current_ms,
+    CAST(json_extract_scalar(extra, '$.targets[0].baseline_ms') AS double) AS top_baseline_ms
+  FROM heimdall.samples
+  WHERE {R} AND kind = 'event' AND json_extract_scalar(extra, '$.event') LIKE 'incident\\_%' ESCAPE '\\'
+),
+i AS (
+  SELECT id,
+    CAST(from_unixtime(min(ts_ms) FILTER (WHERE ev = 'incident_start') / 1000.0) AS timestamp) AS start_time,
+    CAST(from_unixtime(max(ts_ms) FILTER (WHERE ev = 'incident_end') / 1000.0) AS timestamp) AS end_time,
+    arbitrary(scope) AS scope, arbitrary(cause) AS cause, max_by(services, ts_ms) AS services,
+    max(duration_s) AS duration_s, max(series) AS series,
+    max_by(top_target, ts_ms) FILTER (WHERE top_target IS NOT NULL) AS top_target,
+    max_by(top_current_ms, ts_ms) FILTER (WHERE top_target IS NOT NULL) AS top_current_ms,
+    max_by(top_baseline_ms, ts_ms) FILTER (WHERE top_target IS NOT NULL) AS top_baseline_ms
+  FROM e GROUP BY id
+)
+"""
+
+
 def overview() -> dict[str, Any]:
     L = Layout()
     p = [
@@ -363,6 +394,24 @@ def overview() -> dict[str, Any]:
     p.append(
         L.place(
             table(
+                "Incidents",
+                """
+                {INC}
+                SELECT start_time, end_time, scope, cause, services, duration_s, series, top_target,
+                  top_current_ms, top_baseline_ms
+                FROM i ORDER BY start_time DESC LIMIT 100
+                """,
+                "Detected by the probe: anomalies grouped by scope (access network, one service, DNS) with "
+                "a likely cause. Open incidents have no end time. Slack gets the same events.",
+                units={"top_current_ms": "ms", "top_baseline_ms": "ms", "duration_s": "s"},
+            ),
+            24,
+            8,
+        )
+    )
+    p.append(
+        L.place(
+            table(
                 "Discovered servers",
                 """
                 SELECT service, arbitrary(json_extract_scalar(extra, '$.endpoint')) AS endpoint, dst_ip, kind,
@@ -382,7 +431,27 @@ def overview() -> dict[str, Any]:
             10,
         )
     )
-    return dashboard("heimdall-overview", "heimdall / overview", p, [DEVICE])
+    d = dashboard("heimdall-overview", "heimdall / overview", p, [DEVICE])
+    d["annotations"]["list"].append(
+        {
+            "name": "Incidents",
+            "datasource": DS,
+            "enable": True,
+            "iconColor": "red",
+            "target": target(
+                """
+                {INC}
+                SELECT coalesce(start_time, CAST(from_unixtime(${__from} / 1000.0) AS timestamp)) AS time,
+                  coalesce(end_time, CAST(from_unixtime(${__to} / 1000.0) AS timestamp)) AS timeend,
+                  scope || ': ' || cause || ' (' || coalesce(services, '') || ')' AS text
+                FROM i ORDER BY time
+                """,
+                TABLE,
+                "Anno",
+            ),
+        }
+    )
+    return d
 
 
 def per_dst(title: str, kind: str, agg: str, unit: str, description: str = "") -> dict[str, Any]:

@@ -23,6 +23,7 @@ import zlib
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from heimdall_cloud.notify import incident_events
 from heimdall_cloud.schema import Batch, ValidationError, parse_batch, to_record
 
 log = logging.getLogger()
@@ -186,12 +187,14 @@ class Handler:
         token_prefix: str,
         asn: ASNLookup | None = None,
         now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
+        notify: Callable[[str, list[dict[str, Any]]], None] | None = None,
     ):
         self.tokens = TokenStore(ssm, token_prefix)
         self.firehose = firehose
         self.stream = stream
         self.asn = asn or ASNLookup()
         self.now_ms = now_ms
+        self.notify = notify
 
     def __call__(self, event: dict[str, Any], context: Any = None) -> dict[str, Any]:
         try:
@@ -238,6 +241,13 @@ class Handler:
             # The probe resends the whole batch; duplicates are removed
             # downstream by (device, run_id, seq).
             raise HTTPError(503, f"{failed} records not delivered")
+        if self.notify:
+            events = incident_events(batch.samples)
+            if events:
+                try:
+                    self.notify(batch.device, events)
+                except Exception as e:  # notifications never fail the ingest
+                    log.error("notify failed: %s", e)
         return response(200, {"accepted": len(records), "rejected": batch.rejected})
 
 
@@ -249,11 +259,20 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if _handler is None:
         import boto3
 
+        notify = None
+        if fn := os.environ.get("NOTIFIER_FUNCTION"):
+            lam = boto3.client("lambda")
+
+            def notify(device: str, events: list[dict[str, Any]]) -> None:
+                payload = json.dumps({"device": device, "events": events}).encode()
+                lam.invoke(FunctionName=fn, InvocationType="Event", Payload=payload)
+
         _handler = Handler(
             ssm=boto3.client("ssm"),
             firehose=boto3.client("firehose"),
             stream=os.environ["FIREHOSE_STREAM"],
             token_prefix=os.environ["TOKEN_PREFIX"],
+            notify=notify,
         )
     return _handler(event, context)
 

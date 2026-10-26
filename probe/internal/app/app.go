@@ -17,6 +17,7 @@ import (
 
 	"github.com/kgns/heimdall/probe/internal/collectors/self"
 	"github.com/kgns/heimdall/probe/internal/config"
+	"github.com/kgns/heimdall/probe/internal/detect"
 	"github.com/kgns/heimdall/probe/internal/netwatch"
 	"github.com/kgns/heimdall/probe/internal/probes/icmp"
 	"github.com/kgns/heimdall/probe/internal/resolve"
@@ -87,6 +88,14 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		token = t
 		upBuf = uploader.NewBuffer(int(cfg.Upload.Buffer))
 		sinks = append(sinks, upBuf)
+	}
+	var det *detect.Detector
+	if cfg.Detect.Enabled {
+		opt := detect.DefaultOptions()
+		opt.Warmup = cfg.Detect.Warmup
+		opt.AccessServices = cfg.Detect.AccessServices
+		det = detect.New(opt)
+		sinks = append(sinks, det)
 	}
 	rec := sample.NewRecorder(device, h.Now, sinks...)
 	defer rec.Close()
@@ -228,6 +237,21 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 			}
 		}
 	}
+	if det != nil {
+		sched.Add(scheduler.Job{
+			Name: "detect", Interval: time.Minute, NoJitter: true,
+			Run: func(context.Context) {
+				for _, ev := range det.Tick(h.Now()) {
+					if name, _ := ev.Extra["event"].(string); strings.HasPrefix(name, "incident_") {
+						log.Info(name, "scope", ev.Extra["scope"], "cause", ev.Extra["cause"],
+							"services", ev.Extra["services"], "id", ev.Extra["incident_id"])
+					}
+					rec.Emit(ev)
+				}
+			},
+		})
+		jobCounts["detect"]++
+	}
 	if cfg.Trace.Interval > 0 {
 		if pinger.Mode() == icmp.ModeRaw {
 			sched.Add(newTracer(e, pinger, targets).job())
@@ -296,6 +320,7 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 					"buffer":      upBuf.Stats(),
 					"resolver_id": dnsProbes.ResolverID(),
 					"lan_clients": coll.LANClients(),
+					"incidents":   activeIncidents(det),
 				}})
 			},
 		})
@@ -475,6 +500,13 @@ func hopSample(s sample.Sample, t *target.Target, via netip.Addr, r icmp.Result)
 }
 
 const resolveRetryInterval = 30 * time.Second
+
+func activeIncidents(d *detect.Detector) []string {
+	if d == nil {
+		return nil
+	}
+	return d.Active()
+}
 
 func dnsLayerIDs(ls []dnsLayer) []string {
 	out := make([]string, len(ls))

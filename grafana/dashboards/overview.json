@@ -43,7 +43,31 @@
     ]
   },
   "annotations": {
-    "list": []
+    "list": [
+      {
+        "name": "Incidents",
+        "datasource": {
+          "type": "grafana-athena-datasource",
+          "uid": "athena"
+        },
+        "enable": true,
+        "iconColor": "red",
+        "target": {
+          "refId": "Anno",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "WITH e AS ( SELECT ts_ms, json_extract_scalar(extra, '$.event') AS ev, json_extract_scalar(extra, '$.incident_id') AS id, json_extract_scalar(extra, '$.scope') AS scope, json_extract_scalar(extra, '$.cause') AS cause, array_join(CAST(json_extract(extra, '$.services') AS array(varchar)), ', ') AS services, CAST(json_extract_scalar(extra, '$.duration_s') AS bigint) AS duration_s, CAST(json_extract_scalar(extra, '$.anomalous_series') AS integer) AS series, json_extract_scalar(extra, '$.targets[0].target_id') AS top_target, CAST(json_extract_scalar(extra, '$.targets[0].current_ms') AS double) AS top_current_ms, CAST(json_extract_scalar(extra, '$.targets[0].baseline_ms') AS double) AS top_baseline_ms FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'event' AND json_extract_scalar(extra, '$.event') LIKE 'incident\\_%' ESCAPE '\\' ), i AS ( SELECT id, CAST(from_unixtime(min(ts_ms) FILTER (WHERE ev = 'incident_start') / 1000.0) AS timestamp) AS start_time, CAST(from_unixtime(max(ts_ms) FILTER (WHERE ev = 'incident_end') / 1000.0) AS timestamp) AS end_time, arbitrary(scope) AS scope, arbitrary(cause) AS cause, max_by(services, ts_ms) AS services, max(duration_s) AS duration_s, max(series) AS series, max_by(top_target, ts_ms) FILTER (WHERE top_target IS NOT NULL) AS top_target, max_by(top_current_ms, ts_ms) FILTER (WHERE top_target IS NOT NULL) AS top_current_ms, max_by(top_baseline_ms, ts_ms) FILTER (WHERE top_target IS NOT NULL) AS top_baseline_ms FROM e GROUP BY id ) SELECT coalesce(start_time, CAST(from_unixtime(${__from} / 1000.0) AS timestamp)) AS time, coalesce(end_time, CAST(from_unixtime(${__to} / 1000.0) AS timestamp)) AS timeend, scope || ': ' || cause || ' (' || coalesce(services, '') || ')' AS text FROM i ORDER BY time",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      }
+    ]
   },
   "links": [
     {
@@ -708,6 +732,85 @@
     },
     {
       "type": "table",
+      "title": "Incidents",
+      "description": "Detected by the probe: anomalies grouped by scope (access network, one service, DNS) with a likely cause. Open incidents have no end time. Slack gets the same events.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "top_current_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "top_baseline_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "duration_s"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "WITH e AS ( SELECT ts_ms, json_extract_scalar(extra, '$.event') AS ev, json_extract_scalar(extra, '$.incident_id') AS id, json_extract_scalar(extra, '$.scope') AS scope, json_extract_scalar(extra, '$.cause') AS cause, array_join(CAST(json_extract(extra, '$.services') AS array(varchar)), ', ') AS services, CAST(json_extract_scalar(extra, '$.duration_s') AS bigint) AS duration_s, CAST(json_extract_scalar(extra, '$.anomalous_series') AS integer) AS series, json_extract_scalar(extra, '$.targets[0].target_id') AS top_target, CAST(json_extract_scalar(extra, '$.targets[0].current_ms') AS double) AS top_current_ms, CAST(json_extract_scalar(extra, '$.targets[0].baseline_ms') AS double) AS top_baseline_ms FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'event' AND json_extract_scalar(extra, '$.event') LIKE 'incident\\_%' ESCAPE '\\' ), i AS ( SELECT id, CAST(from_unixtime(min(ts_ms) FILTER (WHERE ev = 'incident_start') / 1000.0) AS timestamp) AS start_time, CAST(from_unixtime(max(ts_ms) FILTER (WHERE ev = 'incident_end') / 1000.0) AS timestamp) AS end_time, arbitrary(scope) AS scope, arbitrary(cause) AS cause, max_by(services, ts_ms) AS services, max(duration_s) AS duration_s, max(series) AS series, max_by(top_target, ts_ms) FILTER (WHERE top_target IS NOT NULL) AS top_target, max_by(top_current_ms, ts_ms) FILTER (WHERE top_target IS NOT NULL) AS top_current_ms, max_by(top_baseline_ms, ts_ms) FILTER (WHERE top_target IS NOT NULL) AS top_baseline_ms FROM e GROUP BY id ) SELECT start_time, end_time, scope, cause, services, duration_s, series, top_target, top_current_ms, top_baseline_ms FROM i ORDER BY start_time DESC LIMIT 100",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 24,
+        "h": 8
+      },
+      "id": 10
+    },
+    {
+      "type": "table",
       "title": "Discovered servers",
       "description": "Where the traffic of these services actually goes: the video caches this line is mapped to, game relays, voice regions, GameLift beacons and STUN servers.",
       "datasource": {
@@ -779,11 +882,11 @@
       ],
       "gridPos": {
         "x": 0,
-        "y": 48,
+        "y": 56,
         "w": 24,
         "h": 10
       },
-      "id": 10
+      "id": 11
     }
   ]
 }

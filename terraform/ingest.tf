@@ -37,6 +37,11 @@ data "aws_iam_policy_document" "ingest" {
     resources = [aws_kinesis_firehose_delivery_stream.samples.arn]
   }
   statement {
+    sid       = "Notify"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.notifier.arn]
+  }
+  statement {
     sid       = "DeviceTokens"
     actions   = ["ssm:GetParameter"]
     resources = ["arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter/heimdall/devices/*"]
@@ -72,8 +77,9 @@ resource "aws_lambda_function" "ingest" {
 
   environment {
     variables = {
-      FIREHOSE_STREAM = aws_kinesis_firehose_delivery_stream.samples.name
-      TOKEN_PREFIX    = "/heimdall/devices"
+      FIREHOSE_STREAM   = aws_kinesis_firehose_delivery_stream.samples.name
+      TOKEN_PREFIX      = "/heimdall/devices"
+      NOTIFIER_FUNCTION = aws_lambda_function.notifier.function_name
     }
   }
 

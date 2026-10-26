@@ -35,6 +35,7 @@ type Config struct {
 	STAMP       STAMP       `yaml:"stamp"`
 	UDP         UDP         `yaml:"udp"`
 	Trace       Trace       `yaml:"trace"`
+	Detect      Detect      `yaml:"detect"`
 	Discovery   Discovery   `yaml:"discovery"`
 	DNS         DNS         `yaml:"dns"`
 	Targets     []Target    `yaml:"targets"`
@@ -206,6 +207,15 @@ type STAMP struct {
 	Port     int           `yaml:"port"`
 }
 
+// Detect configures on-probe anomaly and incident detection. Series need
+// Warmup of history before they are judged. AccessServices are the
+// services that measure the access network itself.
+type Detect struct {
+	Enabled        bool          `yaml:"enabled"`
+	Warmup         time.Duration `yaml:"warmup"`
+	AccessServices []string      `yaml:"access_services"`
+}
+
 // Trace configures ICMP traceroutes. One trace runs every Interval, to the
 // targets in turn, so each target is traced about every Interval times the
 // number of distinct destinations. Zero interval disables tracing. Traces
@@ -338,6 +348,7 @@ func Default() Config {
 		STAMP:     STAMP{Interval: time.Second, Timeout: 2 * time.Second, Port: 862},
 		UDP:       UDP{Interval: 5 * time.Second, Timeout: 2 * time.Second},
 		Trace:     Trace{Interval: 30 * time.Second, MaxHops: 24, Probes: 2, Timeout: 2 * time.Second, Gap: 20 * time.Millisecond},
+		Detect:    Detect{Enabled: true, Warmup: 15 * time.Minute, AccessServices: []string{"isp-hop", "isp-gateway"}},
 		Discovery: Discovery{
 			Enabled: true, Interval: time.Hour, Timeout: 20 * time.Second,
 			// Istanbul.
@@ -698,6 +709,9 @@ func (c *Config) validateProbes(bad func(string, ...any)) {
 	}
 	if c.UDP.Interval < time.Second {
 		bad("udp.interval must be at least 1s")
+	}
+	if dt := c.Detect; dt.Enabled && (dt.Warmup < 5*time.Minute || dt.Warmup > 6*time.Hour) {
+		bad("detect.warmup must be between 5m and 6h")
 	}
 	if tr := c.Trace; tr.Interval != 0 {
 		if tr.Interval < 10*time.Second {
