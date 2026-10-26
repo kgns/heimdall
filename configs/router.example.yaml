@@ -85,6 +85,31 @@ output:
     max_file_size: 4MiB
     max_files: 3
 
+# Context recorded next to the measurements. A zero interval disables a
+# collector.
+collectors:
+  wan:                   # throughput of the default-route interface
+    interval: 1s
+  cpu:                   # CPU states, load and UDP/TCP/ICMP error counters
+    interval: 1s
+  lan:                   # ping LAN clients to separate Wi-Fi from WAN problems
+    enabled: true
+    interval: 5s
+    discover_interval: 30s
+    max_clients: 32
+    interfaces: ["br*"]
+    # Clients are identified by HMAC(salt, MAC). The salt is created on
+    # first start; keep it to keep client IDs stable across restarts.
+    salt_file: /misc/heimdall/lan.salt
+    disappear_after: 3   # missed discoveries before a client counts as gone
+  processes:             # daemons on the DNS path, with container memory
+    interval: 30s
+    names: [dnsmasq, dnscrypt-proxy]
+  clock:                 # SNTP offset; the clock itself is never changed
+    interval: 60s
+    server: time.cloudflare.com
+    timeout: 3s
+
 self_metrics:
   interval: 60s
 

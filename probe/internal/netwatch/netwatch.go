@@ -45,6 +45,14 @@ type Watcher struct {
 	initialized bool
 }
 
+// Route returns the route the kernel would use for a, according to the last
+// refresh.
+func (w *Watcher) Route(a netip.Addr) (sysinfo.Route, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return sysinfo.Lookup(w.routes, a)
+}
+
 // Allowed reports whether traffic to a would leave through the default
 // route's interface, according to the last refresh.
 func (w *Watcher) Allowed(a netip.Addr) bool {

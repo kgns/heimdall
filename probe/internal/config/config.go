@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -36,6 +37,48 @@ type Config struct {
 	Output      Output      `yaml:"output"`
 	SelfMetrics SelfMetrics `yaml:"self_metrics"`
 	NetWatch    NetWatch    `yaml:"netwatch"`
+	Collectors  Collectors  `yaml:"collectors"`
+}
+
+// Collectors configures the context signals recorded next to the
+// measurements: WAN throughput, router CPU, LAN clients, the daemons on
+// the DNS path and the local clock offset.
+type Collectors struct {
+	WAN       Periodic  `yaml:"wan"`
+	CPU       Periodic  `yaml:"cpu"`
+	LAN       LAN       `yaml:"lan"`
+	Processes Processes `yaml:"processes"`
+	Clock     Clock     `yaml:"clock"`
+}
+
+// Periodic is a collector with an interval; zero disables it.
+type Periodic struct {
+	Interval time.Duration `yaml:"interval"`
+}
+
+// LAN configures LAN client discovery and pings. Clients are identified
+// by an HMAC of their MAC address keyed with the salt in SaltFile.
+type LAN struct {
+	Enabled          bool          `yaml:"enabled"`
+	Interval         time.Duration `yaml:"interval"`
+	DiscoverInterval time.Duration `yaml:"discover_interval"`
+	MaxClients       int           `yaml:"max_clients"`
+	Interfaces       []string      `yaml:"interfaces"`
+	SaltFile         string        `yaml:"salt_file"`
+	DisappearAfter   int           `yaml:"disappear_after"`
+}
+
+// Processes lists daemons to follow; zero interval disables it.
+type Processes struct {
+	Interval time.Duration `yaml:"interval"`
+	Names    []string      `yaml:"names"`
+}
+
+// Clock configures the SNTP offset check.
+type Clock struct {
+	Interval time.Duration `yaml:"interval"`
+	Server   string        `yaml:"server"`
+	Timeout  time.Duration `yaml:"timeout"`
 }
 
 // Runtime tunes the Go runtime and process priority. Environment variables
@@ -222,6 +265,16 @@ func Default() Config {
 		}},
 		SelfMetrics: SelfMetrics{Interval: time.Minute},
 		NetWatch:    NetWatch{Interval: 10 * time.Second},
+		Collectors: Collectors{
+			WAN: Periodic{Interval: time.Second},
+			CPU: Periodic{Interval: time.Second},
+			LAN: LAN{
+				Enabled: true, Interval: 5 * time.Second, DiscoverInterval: 30 * time.Second,
+				MaxClients: 32, Interfaces: []string{"br*"}, DisappearAfter: 3,
+			},
+			Processes: Processes{Interval: 30 * time.Second, Names: []string{"dnsmasq", "dnscrypt-proxy"}},
+			Clock:     Clock{Interval: time.Minute, Server: "time.cloudflare.com", Timeout: 3 * time.Second},
+		},
 	}
 }
 
@@ -323,6 +376,13 @@ func (c *Config) ProbeRate() float64 {
 		if d.Identity.Interval > 0 {
 			r += float64(len(d.Identity.Names)) / d.Identity.Interval.Seconds()
 		}
+	}
+	// LAN pings are counted at the worst case of max_clients.
+	if l := c.Collectors.LAN; l.Enabled && l.Interval > 0 {
+		r += float64(l.MaxClients) / l.Interval.Seconds()
+	}
+	if cl := c.Collectors.Clock; cl.Interval > 0 {
+		r += 1 / cl.Interval.Seconds()
 	}
 	return r
 }
@@ -480,6 +540,7 @@ func (c *Config) Validate() error {
 			bad("catalog.regions: %q is not a valid region name", r)
 		}
 	}
+	c.validateCollectors(bad)
 	if c.SelfMetrics.Interval < time.Second {
 		bad("self_metrics.interval must be at least 1s")
 	}
@@ -552,6 +613,53 @@ func (c *Config) validateProbes(bad func(string, ...any)) {
 	for _, n := range d.Identity.Names {
 		if !ValidHost(n) {
 			bad("dns.identity.names: %q is not a valid hostname", n)
+		}
+	}
+}
+
+func (c *Config) validateCollectors(bad func(string, ...any)) {
+	co := c.Collectors
+	for name, p := range map[string]Periodic{"wan": co.WAN, "cpu": co.CPU} {
+		if p.Interval != 0 && p.Interval < 500*time.Millisecond {
+			bad("collectors.%s.interval must be 0 (off) or at least 500ms", name)
+		}
+	}
+	if l := co.LAN; l.Enabled {
+		if l.Interval < time.Second {
+			bad("collectors.lan.interval must be at least 1s")
+		}
+		if l.DiscoverInterval < 5*time.Second {
+			bad("collectors.lan.discover_interval must be at least 5s")
+		}
+		if l.MaxClients < 1 || l.MaxClients > 256 {
+			bad("collectors.lan.max_clients must be between 1 and 256")
+		}
+		if len(l.Interfaces) == 0 {
+			bad("collectors.lan.interfaces is required")
+		}
+		for _, p := range l.Interfaces {
+			if _, err := path.Match(p, "x"); err != nil {
+				bad("collectors.lan.interfaces: bad pattern %q", p)
+			}
+		}
+		if l.DisappearAfter < 1 {
+			bad("collectors.lan.disappear_after must be at least 1")
+		}
+	}
+	if p := co.Processes; p.Interval != 0 && p.Interval < 5*time.Second {
+		bad("collectors.processes.interval must be 0 (off) or at least 5s")
+	}
+	if cl := co.Clock; cl.Interval != 0 {
+		if cl.Interval < 10*time.Second {
+			bad("collectors.clock.interval must be 0 (off) or at least 10s")
+		}
+		if !ValidHost(cl.Server) {
+			if a, err := netip.ParseAddr(cl.Server); err != nil || !UsableAddr(a) {
+				bad("collectors.clock.server %q must be a hostname or public IPv4 address", cl.Server)
+			}
+		}
+		if cl.Timeout <= 0 || cl.Timeout > 10*time.Second {
+			bad("collectors.clock.timeout must be in (0, 10s]")
 		}
 	}
 }

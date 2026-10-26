@@ -32,6 +32,7 @@ type Dnsmasq struct {
 	ListenPort    int         `json:"listen_port"`
 	NoResolv      bool        `json:"no_resolv"`
 	ResolvFiles   []string    `json:"resolv_files,omitempty"`
+	LeaseFile     string      `json:"lease_file,omitempty"`
 	Servers       []DNSServer `json:"servers,omitempty"`
 	ResolvServers []DNSServer `json:"resolv_servers,omitempty"`
 	Warnings      []string    `json:"warnings,omitempty"`
@@ -257,6 +258,8 @@ func (p *dnsmasqParser) apply(key, val, origin string, depth int) {
 		p.parseFile(val, depth+1)
 	case "no-resolv":
 		p.d.NoResolv = true
+	case "dhcp-leasefile", "dhcp-lease-file":
+		p.d.LeaseFile = val
 	case "resolv-file":
 		if val == "" {
 			p.resolvDisabled = true

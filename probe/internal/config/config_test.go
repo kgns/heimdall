@@ -39,6 +39,11 @@ output:
     max_file_size: 1MiB
 dns:
   enabled: false
+collectors:
+  lan:
+    enabled: false
+  clock:
+    interval: 0s
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -105,6 +110,12 @@ func TestParseRejects(t *testing.T) {
 		"zone":          "dns:\n  uncached_zone: 'not a zone'\n",
 		"http fast":     "http:\n  interval: 1s\n",
 		"tcp port":      "tcp:\n  port: 0\n",
+		"wan fast":      "collectors:\n  wan:\n    interval: 100ms\n",
+		"lan clients":   "collectors:\n  lan:\n    max_clients: 0\n",
+		"lan pattern":   "collectors:\n  lan:\n    interfaces: ['[']\n",
+		"clock server":  "collectors:\n  clock:\n    server: 'not a host'\n",
+		"clock private": "collectors:\n  clock:\n    server: 192.168.1.1\n",
+		"procs fast":    "collectors:\n  processes:\n    interval: 1s\n",
 		"jsonl dir":     "output:\n  jsonl:\n    dir: ''\n",
 		"nice":          "runtime:\n  nice: 25\n",
 	}
@@ -150,8 +161,9 @@ targets:
 		t.Fatalf("%+v %+v", a, b)
 	}
 	// icmp 1/s + two tcp at 1/10s + one http at 1/60s, plus DNS: five
-	// layers at 1/30s and two identity names at 1/60s.
-	want := 1 + 0.2 + 1.0/60 + 5.0/30 + 2.0/60
+	// layers at 1/30s and two identity names at 1/60s, plus 32 LAN clients
+	// at 1/5s and the clock check at 1/60s.
+	want := 1 + 0.2 + 1.0/60 + 5.0/30 + 2.0/60 + 32.0/5 + 1.0/60
 	if r := c.ProbeRate(); r < want-1e-9 || r > want+1e-9 {
 		t.Fatalf("rate %v, want %v", r, want)
 	}

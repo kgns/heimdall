@@ -76,6 +76,19 @@ list their own `protocols`:
 HTTP samples keep `connect_ms`, `tls_ms`, `ttfb_ms`, `total_ms`, status
 code, protocol and, where response headers reveal it, the CDN and PoP.
 
+Context collectors record what can explain a latency change:
+
+| kind | what | default interval |
+|---|---|---|
+| `wan` | rx/tx bits and packets per second, drops and errors of the default-route interface | 1 s |
+| `cpu` | CPU states, load, and UDP/TCP/ICMP error counter deltas from `/proc/net/snmp` | 1 s |
+| `lan` | ping to each LAN client, with its bridge port and Wi-Fi or wired medium | 5 s |
+| `dnshealth` | PID, memory and container memory limit/OOM count of dnsmasq and dnscrypt-proxy | 30 s |
+| `clock` | SNTP offset of the local clock; the clock is never changed | 60 s |
+
+LAN clients are identified by an HMAC of their MAC address keyed with a
+salt stored in `collectors.lan.salt_file`; hostnames are not recorded.
+
 DNS is probed per layer every 30 s: the local forwarder (`local`), each of
 its upstreams (`upstream`), an optional cache-busting `uncached` layer and
 DoH resolvers reached directly (`doh`). Whoami TXT names (`identity`)

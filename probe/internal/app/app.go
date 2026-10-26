@@ -160,6 +160,24 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 			Run:      func(ctx context.Context) { res.Refresh(ctx, t) },
 		})
 	}
+	if len(hostTargets) > 0 {
+		// Targets that never resolved are retried well before their next
+		// regular refresh, so a failed first lookup does not leave them
+		// unmeasured for a whole resolve interval.
+		sched.Add(scheduler.Job{
+			Name:     "resolve/retry",
+			Interval: resolveRetryInterval,
+			Run: func(ctx context.Context) {
+				var pending []*target.Target
+				for _, t := range hostTargets {
+					if !t.Addr().IsValid() {
+						pending = append(pending, t)
+					}
+				}
+				res.RefreshAll(ctx, pending, 2)
+			},
+		})
+	}
 	jobCounts := map[string]int{}
 	for i, t := range targets {
 		tc := protocols[i]
@@ -180,6 +198,19 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		sched.Add(j)
 	}
 	jobCounts["dns"] = len(dnsProbes.layers) + len(dnsProbes.identity)
+
+	leaseFile := ""
+	if dm, err := sysinfo.DiscoverDnsmasq(h.FS); err == nil && dm != nil {
+		leaseFile = dm.LeaseFile
+	}
+	coll := newCollectors(e, h.FS, nw, h.Lookup, leaseFile)
+	if cfg.Collectors.LAN.Enabled {
+		coll.discoverLAN()
+	}
+	for _, j := range coll.jobs() {
+		sched.Add(j)
+		jobCounts["collectors"]++
+	}
 	sched.Add(scheduler.Job{
 		Name:     "netwatch",
 		Interval: cfg.NetWatch.Interval,
@@ -192,11 +223,14 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 	})
 	selfc := self.New(h.FS, h.Now, func() map[string]any {
 		return map[string]any{
-			"icmp":          pinger.Stats(),
-			"sched":         sched.Totals(),
-			"samples":       rec.Emitted(),
-			"write_errors":  rec.WriteErrors(),
-			"targets_total": len(targets),
+			"icmp":            pinger.Stats(),
+			"sched":           sched.Totals(),
+			"samples":         rec.Emitted(),
+			"write_errors":    rec.WriteErrors(),
+			"targets_total":   len(targets),
+			"lan_clients":     coll.LANClients(),
+			"clock_offset_ms": sample.Millis(coll.ClockOffset()),
+			"resolver_id":     dnsProbes.ResolverID(),
 		}
 	})
 	sched.Add(scheduler.Job{
@@ -216,6 +250,7 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		"host_targets": len(hostTargets),
 		"jobs":         jobCounts,
 		"dns_layers":   dnsLayerIDs(dnsProbes.layers),
+		"lan_clients":  coll.LANClients(),
 		"resolver_id":  dnsProbes.ResolverID(),
 		"regions":      cfg.Catalog.Regions,
 		"probe_rate":   cfg.ProbeRate(),
@@ -307,6 +342,8 @@ func hopSample(s sample.Sample, t *target.Target, via netip.Addr, r icmp.Result)
 	}
 	return s
 }
+
+const resolveRetryInterval = 30 * time.Second
 
 func dnsLayerIDs(ls []dnsLayer) []string {
 	out := make([]string, len(ls))

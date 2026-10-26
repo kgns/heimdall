@@ -171,6 +171,9 @@ func TestDiscoverDnsmasqEX7501(t *testing.T) {
 	if !d.NoResolv {
 		t.Fatal("no-resolv not detected")
 	}
+	if d.LeaseFile != "/var/dnsmasq/dnsmasq.leases" {
+		t.Fatalf("lease file %q", d.LeaseFile)
+	}
 	if len(d.ResolvServers) != 0 {
 		t.Fatalf("resolv servers read despite no-resolv: %+v", d.ResolvServers)
 	}
