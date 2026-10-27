@@ -1,0 +1,3 @@
+version: 4 
+chanspec tx    inbss    obss    nocat   nopkt   doze     txop   goodtx  badtx   glitch  badplcp knoise  idle    busy    timestamp
+6	 4	0	20	7	6	0	64	0	0	783	31	-87	68	35	2049683034

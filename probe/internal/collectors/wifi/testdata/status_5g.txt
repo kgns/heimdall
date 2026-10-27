@@ -1,0 +1,28 @@
+SSID: "home"
+Mode: Managed	RSSI: 0 dBm	SNR: 0 dB	noise: -88 dBm	Channel: 112/80
+BSSID: 02:00:00:aa:bb:cc	Capability: ESS RRM 
+Beacon Interval: 100 msecs	
+Supported Rates: [ 6(b) 9 12(b) 18 24(b) 36 48 54 ]
+HE Capable:
+	Chanspec: 5GHz channel 106 80MHz (0xe36a)
+	Primary channel: 112
+	HT Capabilities: 40MHz SGI20 SGI40 
+	Supported HT MCS : 0-31
+	Supported VHT MCS:
+		NSS1 Tx: 0-9   Rx: 0-9 
+		NSS2 Tx: 0-9   Rx: 0-9 
+		NSS3 Tx: 0-9   Rx: 0-9 
+		NSS4 Tx: 0-9   Rx: 0-9 
+	Supported HE MCS:
+	    20/40/80 MHz:
+		NSS1 Tx: 0-11        Rx: 0-11
+		NSS2 Tx: 0-11        Rx: 0-11
+		NSS3 Tx: 0-11        Rx: 0-11
+		NSS4 Tx: 0-11        Rx: 0-11
+	    160 MHz:
+		NSS1 Tx: 0-11        Rx: 0-11
+		NSS2 Tx: 0-11        Rx: 0-11
+		NSS3 Tx: 0-11        Rx: 0-11
+		NSS4 Tx: 0-11        Rx: 0-11
+QBSS Channel Utilization: 0x4c (29 %)
+

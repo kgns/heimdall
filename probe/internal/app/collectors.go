@@ -12,7 +12,9 @@ import (
 	"github.com/kgns/heimdall/probe/internal/collectors/hoststat"
 	"github.com/kgns/heimdall/probe/internal/collectors/lan"
 	"github.com/kgns/heimdall/probe/internal/collectors/procwatch"
+	"github.com/kgns/heimdall/probe/internal/collectors/wifi"
 	"github.com/kgns/heimdall/probe/internal/netwatch"
+	"github.com/kgns/heimdall/probe/internal/probes/icmp"
 	"github.com/kgns/heimdall/probe/internal/resolve"
 	"github.com/kgns/heimdall/probe/internal/sample"
 	"github.com/kgns/heimdall/probe/internal/scheduler"
@@ -36,6 +38,15 @@ type collectors struct {
 	lanClients map[string]*lanClient
 	leaseFile  string
 	hasher     lan.Hasher
+
+	// wifi adds where a client is attached on Wi-Fi; nil when the Wi-Fi
+	// collector is off.
+	wifi     clientContexter
+	wifiColl *wifi.Collector
+}
+
+type clientContexter interface {
+	ClientContext(id string) map[string]any
 }
 
 type lanClient struct {
@@ -45,12 +56,20 @@ type lanClient struct {
 
 func newCollectors(e *env, fsys fs.FS, nw *netwatch.Watcher, lookup resolve.LookupFunc, leaseFile string) *collectors {
 	c := &collectors{env: e, fs: fsys, nw: nw, lookup: lookup, lanClients: map[string]*lanClient{}, leaseFile: leaseFile, ntpPort: 123}
-	if e.cfg.Collectors.LAN.Enabled {
+	co := e.cfg.Collectors
+	if co.LAN.Enabled || co.Flows.Enabled || co.WiFi.Interval > 0 {
 		salt, err := lan.LoadOrCreateSalt(e.cfg.Collectors.LAN.SaltFile)
 		if err != nil {
 			e.log.Warn("LAN client IDs", "err", err)
 		}
 		c.hasher = lan.NewHasher(salt)
+	}
+	if w := co.WiFi; w.Interval > 0 {
+		c.wifiColl = wifi.New(wifi.Options{
+			Run: wifi.ExecRunner(w.Command, w.Timeout), FS: fsys, MeshFile: w.MeshFile,
+			ID: c.hasher.ID, Emit: e.rec.Emit,
+		})
+		c.wifi = c.wifiColl
 	}
 	return c
 }
@@ -84,6 +103,9 @@ func (c *collectors) jobs() []scheduler.Job {
 			scheduler.Job{Name: "lan/discover", Interval: co.LAN.DiscoverInterval, NoJitter: true, Run: func(context.Context) { c.discoverLAN() }},
 			scheduler.Job{Name: "lan/ping", Interval: co.LAN.Interval, Budgeted: true, Run: c.pingLAN},
 		)
+	}
+	if c.wifiColl != nil {
+		out = append(out, scheduler.Job{Name: "wifi", Interval: co.WiFi.Interval, NoJitter: true, Run: c.wifiColl.Poll})
 	}
 	if co.Processes.Interval > 0 && len(co.Processes.Names) > 0 {
 		out = append(out, c.processJob())
@@ -272,6 +294,25 @@ func (c *collectors) pingLAN(ctx context.Context) {
 			if r.Status == "" {
 				return
 			}
+			var burst []any
+			if n := c.cfg.Collectors.LAN.Burst; n > 1 {
+				// The first answer may have waited for the client to wake;
+				// the sample's RTT is the best of the rest.
+				first := r
+				burst = []any{lanBurstRTT(first)}
+				var best icmp.Result
+				for i := 1; i < n && ctx.Err() == nil; i++ {
+					ri := c.pinger.Ping(ctx, cl.IP, 0, timeout)
+					burst = append(burst, lanBurstRTT(ri))
+					if ri.Status == sample.StatusOK && (best.Status != sample.StatusOK || ri.RTT < best.RTT) {
+						best = ri
+					}
+				}
+				if best.Status == sample.StatusOK {
+					best.Sent = first.Sent
+					r = best
+				}
+			}
 			s := sample.Sample{
 				TS: r.Sent.UnixMilli(), Kind: sample.KindLAN, Category: "home", Service: "lan",
 				TargetID: "lan/" + cl.ID, DstIP: cl.IP.String(), Status: r.Status,
@@ -283,10 +324,32 @@ func (c *collectors) pingLAN(ctx context.Context) {
 			if r.Status == sample.StatusOK {
 				s.RTTms = sample.RTT(r.RTT)
 			}
+			if burst != nil {
+				s.Extra["burst_ms"] = burst
+			}
+			for k, v := range c.wifiContext(cl.ID) {
+				s.Extra[k] = v
+			}
 			c.rec.Emit(s)
 		}()
 	}
 	wg.Wait()
+}
+
+// lanBurstRTT is one burst answer in milliseconds, or nil when lost.
+func lanBurstRTT(r icmp.Result) any {
+	if r.Status != sample.StatusOK {
+		return nil
+	}
+	return sample.Millis(r.RTT)
+}
+
+// wifiContext is the Wi-Fi part of a client's context.
+func (c *collectors) wifiContext(id string) map[string]any {
+	if c.wifi == nil {
+		return nil
+	}
+	return c.wifi.ClientContext(id)
 }
 
 func (c *collectors) processJob() scheduler.Job {

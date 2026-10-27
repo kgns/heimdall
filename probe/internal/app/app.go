@@ -286,6 +286,14 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		sched.Add(j)
 		jobCounts["collectors"]++
 	}
+	flowSamp, err := coll.startFlows(ctx)
+	if err != nil {
+		log.Warn("flow collector unavailable", "err", err)
+		rec.Emit(sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, Category: "home", Service: "lan",
+			Extra: map[string]any{"event": "collector_unavailable", "collector": "flows", "error": err.Error()}})
+	} else if flowSamp != nil {
+		jobCounts["flows"] = 1
+	}
 	sched.Add(scheduler.Job{
 		Name:     "netwatch",
 		Interval: cfg.NetWatch.Interval,
@@ -343,6 +351,9 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		}
 		if up != nil {
 			x["upload"], x["buffer"] = up.Status(), upBuf.Stats()
+		}
+		if flowSamp != nil {
+			x["flows"] = flowSamp.Stats()
 		}
 		return x
 	})

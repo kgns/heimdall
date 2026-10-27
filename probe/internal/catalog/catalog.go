@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"go.yaml.in/yaml/v3"
@@ -43,10 +44,15 @@ type File struct {
 
 // Service is one internet service and how to reach it.
 type Service struct {
-	ID        string   `yaml:"id"`
-	Name      string   `yaml:"name"`
-	Category  string   `yaml:"category"`
-	Hosts     []string `yaml:"hosts"`
+	ID       string   `yaml:"id"`
+	Name     string   `yaml:"name"`
+	Category string   `yaml:"category"`
+	Hosts    []string `yaml:"hosts"`
+	// Domains are the domains whose names the service's clients connect
+	// to, beyond its hosts: video CDNs, API and asset domains. They name
+	// the service of the connections LAN clients open; they are not
+	// measured.
+	Domains   []string `yaml:"domains"`
 	IPs       []string `yaml:"ips"`
 	Discovery []string `yaml:"discovery"`
 	// STUN lists host:port STUN servers of the service, for the stun
@@ -130,6 +136,11 @@ func (s *Service) validate() error {
 	for _, h := range s.Hosts {
 		if !config.ValidHost(h) {
 			bad("host %q is not a valid lowercase hostname", h)
+		}
+	}
+	for _, d := range s.Domains {
+		if !config.ValidHost(d) {
+			bad("domain %q is not a valid lowercase domain name", d)
 		}
 	}
 	for _, ip := range s.IPs {
@@ -235,6 +246,25 @@ func Targets(services []Service, discovery bool) []config.Target {
 				Interval: s.ICMPInterval, Protocols: ipProtos,
 			})
 		}
+	}
+	return out
+}
+
+// Domains returns, for each enabled service, the domains its connections
+// go to: its hosts without a leading "www." and its listed domains.
+func Domains(services []Service) map[string][]string {
+	out := map[string][]string{}
+	for _, s := range services {
+		if !s.IsEnabled() {
+			continue
+		}
+		var ds []string
+		for _, h := range s.Hosts {
+			ds = append(ds, strings.TrimPrefix(h, "www."))
+		}
+		ds = append(ds, s.Domains...)
+		slices.Sort(ds)
+		out[s.ID] = slices.Compact(ds)
 	}
 	return out
 }

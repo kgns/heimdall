@@ -1,0 +1,40 @@
+counters_version 30
+datalen 1316
+Slice_index: 0
+reinitreason_counts: 2(1) 
+reinit 1 reset 8 pciereset 0 cfgrestore 0 dma_hang 0 ampdu_wds 0 
+txframe 145946446 txbyte 2924781372 txretrans 2662706 txlost 0 txfail 52778 txchanrej 66686 
+txdatamcast 0 txdatabcast 0 
+tbtt 18754074 p2p_tbtt 0 p2p_tbtt_miss 0 
+rxframe 67139072 rxbyte 2220164149 rxerror 849 
+txdropped 0 txprshort 0 txdmawar 0 txnobuf 190 txnoassoc 11 txchit 132915799 txcmiss 13026468 
+txserr 70743 txphyerr 2 txphycrs 0 txerror 201 txexptime 456 
+d11_txfrag 145898610 d11_txmulti 12191112 d11_txbcast 0 d11_txretry 92173 d11_txretrie 55472 
+d11_txrts 36615397 d11_txnocts 916800 d11_txnoack 242890 d11_txfrmsnt 146200304 
+rxdropped 0 rxcrc 184760668 rxnobuf 8 rxnondata 0 rxbadds 0 rxbadcm 87 rxdup 1279129 rxfragerr 0 
+rxrunt 0 rxgiant 1 rxnoscb 0 rxbadproto 6043011 rxbadsrcmac 840 rxrtry 3047986 
+d11_rxfrag 516761672 d11_rxmulti 337855 d11_rxbcast 0 d11_rxundec 126 
+rxctl 491647773 rxbadda 0 rxfilter 87 rxuflo: 0 0 0 0 0 0 
+
+tkipmicfaill 0 tkipicverr 0 tkipcntrmsr 0 
+tkipreplay 0 ccmpfmterr 0 ccmpreplay 4 
+ccmpundec 0 fourwayfail 0 wepundec 48 
+wepicverr 0 decsuccess 52294038 rxundec 126 
+
+rx1mbps 0 rx2mbps 0 rx5mbps5 0 rx11mbps 0 
+rx6mbps 1142881 rx9mbps 0 rx12mbps 719 rx18mbps 0 
+rx24mbps 1343703 rx36mbps 0 rx48mbps 0 rx54mbps 0 
+txmpdu_sgi 36019585 rxmpdu_sgi 1034700 txmpdu_stbc 2167 rxmpdu_stbc 1551686 rxmpdu_mu 0 
+cso_normal 0 cso_passthrough 0 
+chained 65996009 chainedsz1 0 unchained 502257125 maxchainsz 126 currchainsz 1 
+
+txbar 22058 txpspoll 0 rxbar 8450 rxpspoll 0 
+txnull 0 txqosnull 0 rxnull 2758847 rxqosnull 306074 
+txassocreq 0 txreassocreq 0 txdisassoc 0 txassocrsp 128 txreassocrsp 405 
+txauth 778 txdeauth 82 txprobereq 5787 txprobersp 284417 txaction 2674 
+rxassocreq 129 rxreassocreq 405 rxdisassoc 61 rxassocrsp 0 rxreassocrsp 0 
+rxauth 805 rxdeauth 82 rxprobereq 2409740 rxprobersp 11249297 rxaction 26403 
+txallfrm 243582005 txbcnfrm 37286413 txrtsfrm 37532197 txctsfrm 60270954 txackfrm 9875006 txback 33298576 txdnlfrm 0 
+txampdu 37715203 txmpdu 135603938 txucast 38562357 rxrsptmout 1736618 txinrtstxop 36615397 txrtsfail 41682 
+txper_ucastdt 91.2% txper_rts 94.0%
+txfunfl: 0 0 0 0 2 16 txtplunfl 0 txphyerror 18 

@@ -51,5 +51,13 @@ upload:
 collectors:
   lan:
     salt_file: /opt/heimdall/etc/lan.salt
+    burst: 2
+  flows:
+    enabled: true
+    # raw names servers and addresses: for this prototype on the owner's
+    # own network only. A product would use category or service.
+    names: raw
+  wifi:
+    interval: 10s
   processes:
     interval: 0s

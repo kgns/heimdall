@@ -22,6 +22,13 @@ const (
 	KindWAN       Kind = "wan"
 	KindCPU       Kind = "cpu"
 	KindLAN       Kind = "lan"
+	// KindFlow is one connection a LAN client opened, split into its LAN
+	// and WAN round trips.
+	KindFlow Kind = "flow"
+	// KindWiFiSta and KindWiFiRadio are Wi-Fi statistics of one station
+	// and of one radio.
+	KindWiFiSta   Kind = "wifi_sta"
+	KindWiFiRadio Kind = "wifi_radio"
 	KindDNSHealth Kind = "dnshealth"
 	KindClock     Kind = "clock"
 	KindEvent     Kind = "event"

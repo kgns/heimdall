@@ -1,0 +1,375 @@
+{
+	"Device": {
+		"X_84D32A_IEEE1905": {
+			"AL": {
+				"IEEE1905Id": "02:00:42:8f:d7:3e",
+				"Status": "UP",
+				"LastChange": 1919708,
+				"LowerLayers": [ "Interface.1", "Interface.2", "Interface.3", "Interface.4" ],
+				"InterfaceNumberOfEntries": 4,
+				"EnableReboot": true,
+				"EnableInterfacePowerControl": true,
+				"DeviceMode": "Router",
+				"DeviceRole": "Controller",
+				"ReleaseVersion": "3.0",
+				"LEDstatus": "",
+				"WIFI24GChannel": "6",
+				"WIFI5GChannel": "112",
+				"Interface.1": {
+					"InterfaceId": "02:00:06:d5:1a:9e",
+					"Status": "Up",
+					"LastChange": 1919708,
+					"LowerLayers": [  ],
+					"MediaType": "IEEE 802.11ax (IEEE 802.11ax)",
+					"PowerState": "On",
+					"LinkNumberOfEntries": 0,
+					"VendorProperties": {
+						"OUI": "00-00-00",
+						"Information": ""
+					}
+				},
+				"Interface.2": {
+					"InterfaceId": "02:00:2d:22:41:50",
+					"Status": "Up",
+					"LastChange": 1919708,
+					"LowerLayers": [  ],
+					"MediaType": "IEEE 802.11ax (IEEE 802.11ax)",
+					"PowerState": "On",
+					"LinkNumberOfEntries": 0,
+					"VendorProperties": {
+						"OUI": "00-00-00",
+						"Information": ""
+					}
+				},
+				"Interface.3": {
+					"InterfaceId": "02:00:56:73:1c:03",
+					"Status": "Up",
+					"LastChange": 1919708,
+					"LowerLayers": [  ],
+					"MediaType": "IEEE 802.11ax (IEEE 802.11ax)",
+					"PowerState": "On",
+					"LinkNumberOfEntries": 0,
+					"VendorProperties": {
+						"OUI": "00-00-00",
+						"Information": ""
+					}
+				},
+				"Interface.4": {
+					"InterfaceId": "02:00:42:8f:d7:3e",
+					"Status": "Down",
+					"LastChange": 1919708,
+					"LowerLayers": [  ],
+					"MediaType": "IEEE 802.3ab(IEEE 802.3ab Gigabit Ethernet)",
+					"PowerState": "On",
+					"LinkNumberOfEntries": 0,
+					"VendorProperties": {
+						"OUI": "00-00-00",
+						"Information": ""
+					}
+				},
+				"NetworkTopology": {
+					"Enable": true,
+					"Status": "Available",
+					"IEEE1905DeviceNumberOfEntries": 2,
+					"IEEE1905Device.1": {
+						"IEEE1905Id": "02:00:0e:77:d9:49",
+						"InterfaceNumberOfEntries": 14,
+						"NonIEEE1905NeighborNumberOfEntries": 4,
+						"IEEE1905NeighborNumberOfEntries": 1,
+						"BridgingTupleNumberOfEntries": 1,
+						"EnableReboot": true,
+						"EnableInterfacePowerControl": true,
+						"FirmwareVersion": "V5.70(ACDW.0)b13",
+						"Newfirmware": 0,
+						"NewfirmwareUpgradeState": 0,
+						"Newfirmwareversion": "",
+						"Newfirmwaredate": "",
+						"Hostname": "WX5600-AP-17479",
+						"DeviceIP": "192.168.1.2",
+						"DeviceMode": "AP",
+						"ReleaseVersion": "3.0",
+						"LEDstatus": "",
+						"WIFI24GChannel": "6",
+						"WIFI5GChannel": "112",
+						"PowerControlMediaType": "0xffff",
+						"PowerControlPowerState": "0xff",
+						"HopCounts": "0",
+						"Parent": "02:00:42:8f:d7:3e",
+						"AppVersion": {
+							"Version": "1.0",
+							"L2DeviveCtrl": 0,
+							"WiFiAutoCfg": 0,
+							"WiFiOnOff": 0,
+							"FwUpgrade": 0,
+							"LEDOnOff": 0
+						},
+						"Interface.1": {
+							"InterfaceId": "02:00:2c:ab:1b:ff",
+							"MediaType": "IEEE 802.3u(IEEE 802.3u Fast Ethernet)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.2": {
+							"InterfaceId": "02:00:f8:f6:f5:cf",
+							"MediaType": "IEEE 802.11ax (IEEE 802.11ax)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.3": {
+							"InterfaceId": "02:00:47:bc:1f:ed",
+							"MediaType": "IEEE 802.11ax (IEEE 802.11ax)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.4": {
+							"InterfaceId": "02:00:27:db:48:80",
+							"MediaType": "IEEE 802.11ax (IEEE 802.11ax)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.5": {
+							"InterfaceId": "02:00:37:ef:bb:a5",
+							"MediaType": "IEEE 802.11ax (IEEE 802.11ax)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.6": {
+							"InterfaceId": "02:00:07:c1:9a:24",
+							"MediaType": "IEEE 802.11ax (IEEE 802.11ax)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.7": {
+							"InterfaceId": "02:00:fe:04:1c:a4",
+							"MediaType": "IEEE 802.3u(IEEE 802.3u Fast Ethernet)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.8": {
+							"InterfaceId": "02:00:26:f4:57:1f",
+							"MediaType": "IEEE 802.11ax (IEEE 802.11ax)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.9": {
+							"InterfaceId": "02:00:db:ab:84:d9",
+							"MediaType": "IEEE 802.11ax (IEEE 802.11ax)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.10": {
+							"InterfaceId": "02:00:6a:34:e9:f3",
+							"MediaType": "IEEE 802.11ax (IEEE 802.11ax)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.11": {
+							"InterfaceId": "02:00:e5:98:71:5d",
+							"MediaType": "IEEE 802.11ax (IEEE 802.11ax)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.12": {
+							"InterfaceId": "02:00:94:8e:04:b1",
+							"MediaType": "IEEE 802.3u(IEEE 802.3u Fast Ethernet)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.13": {
+							"InterfaceId": "02:00:46:0c:27:bd",
+							"MediaType": "IEEE 802.3u(IEEE 802.3u Fast Ethernet)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.14": {
+							"InterfaceId": "02:00:0e:77:d9:49",
+							"MediaType": "IEEE 802.3u(IEEE 802.3u Fast Ethernet)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"NonIEEE1905Neighbor.1": {
+							"LocalInterface": "Interface.1",
+							"NeighborInterfaceId": "02:00:03:f3:d6:af",
+							"MediaType": "IEEE 802.3u(IEEE 802.3u Fast Ethernet)"
+						},
+						"NonIEEE1905Neighbor.2": {
+							"LocalInterface": "Interface.7",
+							"NeighborInterfaceId": "02:00:03:f3:d6:af",
+							"MediaType": "IEEE 802.3u(IEEE 802.3u Fast Ethernet)"
+						},
+						"NonIEEE1905Neighbor.3": {
+							"LocalInterface": "Interface.12",
+							"NeighborInterfaceId": "02:00:03:f3:d6:af",
+							"MediaType": "IEEE 802.3u(IEEE 802.3u Fast Ethernet)"
+						},
+						"NonIEEE1905Neighbor.4": {
+							"LocalInterface": "Interface.13",
+							"NeighborInterfaceId": "02:00:03:f3:d6:af",
+							"MediaType": "IEEE 802.3u(IEEE 802.3u Fast Ethernet)"
+						},
+						"NonIEEE1905Neighbor.5": {
+							"LocalInterface": "Interface.6",
+							"NeighborInterfaceId": "02:00:1f:21:aa:b4",
+							"MediaType": "IEEE 802.11ac(IEEE 802.11ac (5GHz))",
+							"ConnectedMainSSID": 1,
+							"Band": "5GHz",
+							"RATE": 380,
+							"RSSI": -76,
+							"SNR": 14,
+							"SignalLevel": 3,
+							"Tx": "1541501",
+							"Rx": "165177",
+							"DataDownlinkRate": 380,
+							"DataUplinkRate": 685
+						},
+						"NonIEEE1905Neighbor.6": {
+							"LocalInterface": "Interface.6",
+							"NeighborInterfaceId": "02:00:98:e0:e0:8c",
+							"MediaType": "IEEE 802.11ax (IEEE 802.11ax)",
+							"ConnectedMainSSID": 1,
+							"Band": "5GHz",
+							"RATE": 125,
+							"RSSI": -81,
+							"SNR": 9,
+							"SignalLevel": 2,
+							"Tx": "45028",
+							"Rx": "25498",
+							"DataDownlinkRate": 125,
+							"DataUplinkRate": 421
+						},
+						"NonIEEE1905Neighbor.7": {
+							"LocalInterface": "Interface.11",
+							"NeighborInterfaceId": "02:00:c3:49:09:86",
+							"MediaType": "IEEE 802.11n 2.4(IEEE 802.11n (2.4GHz))",
+							"ConnectedMainSSID": 1,
+							"Band": "2.4GHz",
+							"RATE": 70,
+							"RSSI": -60,
+							"SNR": 30,
+							"SignalLevel": 4,
+							"Tx": "44627",
+							"Rx": "33718",
+							"DataDownlinkRate": 70,
+							"DataUplinkRate": 63
+						},
+						"NonIEEE1905Neighbor.8": {
+							"LocalInterface": "Interface.11",
+							"NeighborInterfaceId": "02:00:f5:05:bd:c5",
+							"MediaType": "IEEE 802.11n 2.4(IEEE 802.11n (2.4GHz))",
+							"ConnectedMainSSID": 1,
+							"Band": "2.4GHz",
+							"RATE": 5,
+							"RSSI": -37,
+							"SNR": 53,
+							"SignalLevel": 5,
+							"Tx": "749625",
+							"Rx": "3490707",
+							"DataDownlinkRate": 5,
+							"DataUplinkRate": 63
+						},
+						"IEEE1905Neighbor.1": {
+							"LocalInterface": "Interface.13",
+							"NeighborDeviceId": "02:00:42:8f:d7:3e",
+							"MediaType": "IEEE 802.3u(IEEE 802.3u Fast Ethernet)",
+							"IEEE802dot1Bridge": false
+						},
+						"BridgingTuple.1": {
+							"InterfaceList": [ "02:00:46:0c:27:bd", "02:00:94:8e:04:b1", "02:00:e5:98:71:5d", "02:00:6a:34:e9:f3", "02:00:db:ab:84:d9", "02:00:26:f4:57:1f", "02:00:fe:04:1c:a4", "02:00:07:c1:9a:24", "02:00:37:ef:bb:a5", "02:00:27:db:48:80", "02:00:47:bc:1f:ed", "02:00:f8:f6:f5:cf", "02:00:2c:ab:1b:ff" ]
+						}
+					},
+					"IEEE1905Device.2": {
+						"IEEE1905Id": "02:00:42:8f:d7:3e",
+						"InterfaceNumberOfEntries": 4,
+						"NonIEEE1905NeighborNumberOfEntries": 2,
+						"IEEE1905NeighborNumberOfEntries": 1,
+						"BridgingTupleNumberOfEntries": 2,
+						"EnableReboot": false,
+						"EnableInterfacePowerControl": false,
+						"FirmwareVersion": "V5.18(ACDA.0)T75C_b13_E",
+						"Newfirmware": 0,
+						"NewfirmwareUpgradeState": 0,
+						"Newfirmwareversion": "",
+						"Newfirmwaredate": "",
+						"Hostname": "EX7501-B0",
+						"DeviceIP": "192.168.1.1",
+						"DeviceMode": "Router",
+						"ReleaseVersion": "3.0",
+						"LEDstatus": "",
+						"WIFI24GChannel": "6",
+						"WIFI5GChannel": "112",
+						"PowerControlMediaType": "0xffff",
+						"PowerControlPowerState": "0xff",
+						"HopCounts": "0",
+						"Parent": "",
+						"AppVersion": {
+							"Version": "1.0",
+							"L2DeviveCtrl": 0,
+							"WiFiAutoCfg": 0,
+							"WiFiOnOff": 0,
+							"FwUpgrade": 0,
+							"LEDOnOff": 0
+						},
+						"Interface.1": {
+							"InterfaceId": "02:00:42:8f:d7:3e",
+							"MediaType": "IEEE 802.3ab(IEEE 802.3ab Gigabit Ethernet)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.2": {
+							"InterfaceId": "02:00:2d:22:41:50",
+							"MediaType": "IEEE 802.11n 2.4(IEEE 802.11n (2.4GHz))",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.3": {
+							"InterfaceId": "02:00:56:73:1c:03",
+							"MediaType": "IEEE 802.11ax (IEEE 802.11ax)",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"Interface.4": {
+							"InterfaceId": "02:00:06:d5:1a:9e",
+							"MediaType": "IEEE 802.11ac(IEEE 802.11ac (5GHz))",
+							"PowerState": "On",
+							"Uplink": "false"
+						},
+						"NonIEEE1905Neighbor.1": {
+							"LocalInterface": "Interface.1",
+							"NeighborInterfaceId": "02:00:4e:5e:f7:72",
+							"MediaType": "IEEE 802.3ab(IEEE 802.3ab Gigabit Ethernet)"
+						},
+						"NonIEEE1905Neighbor.2": {
+							"LocalInterface": "Interface.4",
+							"NeighborInterfaceId": "02:00:1c:0b:f7:b6",
+							"MediaType": "IEEE 802.11ax (IEEE 802.11ax)",
+							"ConnectedMainSSID": 1,
+							"Band": "5GHz",
+							"RATE": 1107,
+							"RSSI": -45,
+							"SNR": 43,
+							"SignalLevel": 5,
+							"Tx": "24813",
+							"Rx": "12254"
+						},
+						"IEEE1905Neighbor.1": {
+							"LocalInterface": "Interface.1",
+							"NeighborDeviceId": "02:00:0e:77:d9:49",
+							"MediaType": "IEEE 802.3ab(IEEE 802.3ab Gigabit Ethernet)",
+							"IEEE802dot1Bridge": false
+						},
+						"BridgingTuple.1": {
+							"InterfaceList": [ "02:00:42:8f:d7:3e", "02:00:56:73:1c:03", "02:00:2d:22:41:50", "02:00:06:d5:1a:9e" ]
+						},
+						"BridgingTuple.2": {
+							"InterfaceList": [ "02:00:42:8f:d7:3e" ]
+						}
+					}
+				},
+				"Security": {
+					"SetupMethod": "UCPK",
+					"Password": "(null)"
+				}
+			}
+		}
+	}
+}

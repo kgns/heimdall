@@ -7,32 +7,39 @@ services:
     name: TV+
     category: streaming
     hosts: [tvplus.com.tr]
+    domains: [tvplus.com.tr]
     protocols: [tcp, http]
     notes: drops ICMP; hosted inside Turkcell's network
   - id: tod
     name: TOD
     category: streaming
     hosts: [www.todtv.com.tr]
+    domains: [todtv.com.tr, tod.tv, beinconnect.com.tr]
   - id: exxen
     name: Exxen
     category: streaming
     hosts: [www.exxen.com]
+    domains: [exxen.com, exxen.com.tr]
   - id: gain
     name: Gain
     category: streaming
     hosts: [www.gain.tv]
+    domains: [gain.tv]
   - id: trt-tabii
     name: TRT tabii
     category: streaming
     hosts: [www.tabii.com]
+    domains: [tabii.com, trt.net.tr]
   - id: puhutv
     name: puhutv
     category: streaming
     hosts: [puhutv.com]
+    domains: [puhutv.com, puhu.tv]
   - id: hbo-max
     name: HBO Max
     category: streaming
     hosts: [www.hbomax.com]
+    domains: [hbomax.com, max.com, hbo.com]
     notes: replaced BluTV in Türkiye
 
   # gaming
@@ -47,6 +54,7 @@ services:
     name: BiP
     category: messaging
     hosts: [www.bip.com]
+    domains: [bip.com, bip.ai]
     protocols: [tcp, http]
     notes: drops ICMP; hosted inside Turkcell's network
 
@@ -55,25 +63,31 @@ services:
     name: e-Devlet
     category: browsing
     hosts: [www.turkiye.gov.tr]
+    domains: [turkiye.gov.tr]
     protocols: [tcp, http]
     notes: drops ICMP
   - id: trendyol
     name: Trendyol
     category: browsing
     hosts: [www.trendyol.com]
+    domains: [trendyol.com, dsmcdn.com]
   - id: hepsiburada
     name: Hepsiburada
     category: browsing
     hosts: [www.hepsiburada.com]
+    domains: [hepsiburada.com, hepsiburada.net, hepsiglobal.com]
   - id: sahibinden
     name: sahibinden.com
     category: browsing
     hosts: [www.sahibinden.com]
+    domains: [sahibinden.com, shbdn.com]
   - id: hurriyet
     name: Hürriyet
     category: browsing
     hosts: [www.hurriyet.com.tr]
+    domains: [hurriyet.com.tr]
   - id: sozcu
     name: Sözcü
     category: browsing
     hosts: [www.sozcu.com.tr]
+    domains: [sozcu.com.tr]

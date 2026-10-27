@@ -6,9 +6,10 @@ VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo de
 LDFLAGS   := -s -w -X main.version=$(VERSION)
 GOBUILD   := CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)"
 CMDS      := heimdall-probe heimdall-reflector
+CLIENT_PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64
 STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.2
 
-.PHONY: all build build-armv7 build-arm64 build-host test lint fmt clean
+.PHONY: all build build-armv7 build-arm64 build-host build-client test lint fmt clean
 
 all: test build
 
@@ -30,6 +31,14 @@ build-host:
 	@mkdir -p $(BIN_DIR)/host
 	cd $(PROBE_DIR) && for c in $(CMDS); do \
 		$(GOBUILD) -o $(BIN_DIR)/host/$$c ./cmd/$$c || exit 1; \
+	done
+
+# heimdall-client, the on-demand measurement for a laptop on the LAN, for
+# each platform in CLIENT_PLATFORMS: bin/client/heimdall-client-<os>-<arch>.
+build-client:
+	@mkdir -p $(BIN_DIR)/client
+	cd $(PROBE_DIR) && for p in $(CLIENT_PLATFORMS); do \
+		GOOS=$${p%/*} GOARCH=$${p#*/} $(GOBUILD) -o $(BIN_DIR)/client/heimdall-client-$${p%/*}-$${p#*/} ./cmd/heimdall-client || exit 1; \
 	done
 
 test:

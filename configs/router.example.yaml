@@ -175,6 +175,26 @@ collectors:
     salt_file: /misc/heimdall/lan.salt
     use_leases: false    # leases outlive devices; ARP shows who is actually there
     disappear_after: 3   # missed discoveries before a client counts as gone
+    # Echo requests sent back to back per client. A Wi-Fi client in power
+    # save answers the first only after it wakes for a beacon; the sample
+    # keeps the best of the rest and lists all of them in burst_ms.
+    burst: 1
+  flows:                 # split each client connection into LAN and WAN round trips
+    enabled: false
+    interface: br0       # the LAN bridge; needs CAP_NET_RAW
+    # How much of the destination is reported: category (streaming, ...),
+    # service (netflix, ...) or raw, which adds the server name and
+    # address and the client's address and port. Use raw only on your
+    # own network.
+    names: service
+    max_per_minute: 1200 # flow samples per minute; the rest are only counted
+    receive_buffer: 512KiB
+  wifi:                  # radio and station statistics through Broadcom wl
+    interval: 0s         # 0 is off; 10s is a good value
+    command: wl
+    timeout: 3s          # per wl call
+    # EasyMesh topology written by the CPE: extender clients and backhaul.
+    mesh_file: /tmp/zy1905.json
   processes:             # daemons on the DNS path, with container memory
     interval: 30s
     names: [dnsmasq, dnscrypt-proxy]

@@ -12,55 +12,66 @@ services:
     name: YouTube
     category: streaming
     hosts: [www.youtube.com]
+    domains: [youtube.com, googlevideo.com, ytimg.com, youtu.be, youtubei.googleapis.com, youtube-nocookie.com]
     discovery: [youtube_cache]
     notes: video is served from googlevideo caches, often inside the ISP
   - id: netflix
     name: Netflix
     category: streaming
     hosts: [www.netflix.com]
+    domains: [netflix.com, nflxvideo.net, nflxext.com, nflximg.net, nflxso.net, netflix.net]
     discovery: [netflix_oca]
     notes: www is the AWS-hosted UI; video comes from Open Connect appliances
   - id: prime-video
     name: Prime Video
     category: streaming
     hosts: [www.primevideo.com]
+    domains: [primevideo.com, aiv-cdn.net, aiv-delivery.net, pv-cdn.net, atv-ps.amazon.com]
   - id: disney-plus
     name: Disney+
     category: streaming
     hosts: [www.disneyplus.com]
+    domains: [disneyplus.com, dssott.com, bamgrid.com, disney-plus.net, dssedge.com]
   - id: twitch
     name: Twitch
     category: streaming
     hosts: [www.twitch.tv]
+    domains: [twitch.tv, ttvnw.net, jtvnw.net, twitchcdn.net]
   - id: spotify
     name: Spotify
     category: streaming
     hosts: [open.spotify.com]
+    domains: [spotify.com, scdn.co, spotifycdn.com, spotify.net]
   - id: apple-tv
     name: Apple TV
     category: streaming
     hosts: [tv.apple.com]
+    domains: [tv.apple.com, play.itunes.apple.com, hls.itunes.apple.com]
 
   # gaming
   - id: steam
     name: Steam
     category: gaming
     hosts: [store.steampowered.com]
+    domains: [steampowered.com, steamcommunity.com, steamstatic.com, steamcontent.com, steamserver.net, steamchina.com]
     discovery: [steam_sdr]
     notes: CS2 and Dota 2 traffic goes through Valve SDR relays
   - id: riot
     name: Riot Games
     category: gaming
     hosts: [auth.riotgames.com]
+    domains: [riotgames.com, riotcdn.net, leagueoflegends.com, playvalorant.com]
     notes: Riot publishes no endpoint that reveals game servers, so there is no discovery
   - id: epic
     name: Epic Games
     category: gaming
     hosts: [www.epicgames.com]
+    domains: [epicgames.com, epicgames.dev, unrealengine.com, fortnite.com, epicgames.net]
   - id: blizzard
     name: Blizzard Battle.net
     category: gaming
     hosts: [eu.battle.net]
+    domains: [battle.net, blizzard.com, blzstatic.cn]
   - id: aws-gamelift
     name: AWS GameLift regions
     category: gaming
@@ -72,16 +83,19 @@ services:
     name: Google Meet
     category: video_calls
     hosts: [meet.google.com]
+    domains: [meet.google.com, meetings.googleapis.com]
     discovery: [stun]
     stun: ["stun.l.google.com:19302"]
   - id: zoom
     name: Zoom
     category: video_calls
     hosts: [zoom.us]
+    domains: [zoom.us, zoom.com, zoomgov.com]
   - id: teams
     name: Microsoft Teams
     category: video_calls
     hosts: [teams.microsoft.com]
+    domains: [teams.microsoft.com, teams.live.com, teams.cloud.microsoft, skype.com, trouter.teams.microsoft.com]
     discovery: [stun]
     stun: ["worldaz.relay.teams.microsoft.com:3478"]
 
@@ -90,6 +104,7 @@ services:
     name: Discord
     category: voice
     hosts: [discord.com, gateway.discord.gg]
+    domains: [discord.com, discord.gg, discordapp.com, discordapp.net, discord.media]
     discovery: [discord_voice]
 
   # messaging
@@ -97,10 +112,12 @@ services:
     name: WhatsApp
     category: messaging
     hosts: [web.whatsapp.com]
+    domains: [whatsapp.com, whatsapp.net, wa.me]
   - id: telegram
     name: Telegram
     category: messaging
     hosts: [web.telegram.org]
+    domains: [telegram.org, t.me, telegram.me]
     protocols: [tcp, http]
     notes: drops ICMP
 
@@ -109,46 +126,56 @@ services:
     name: Google Search
     category: browsing
     hosts: [www.google.com]
+    domains: [google.com, google.com.tr, gstatic.com, googleapis.com, googleusercontent.com, gvt1.com, gvt2.com]
   - id: wikipedia
     name: Wikipedia
     category: browsing
     hosts: [www.wikipedia.org]
+    domains: [wikipedia.org, wikimedia.org, wikidata.org]
   - id: cloudflare
     name: Cloudflare
     category: browsing
     hosts: [www.cloudflare.com]
+    domains: [cloudflare.com, one.one.one.one]
 
   # social
   - id: facebook
     name: Facebook
     category: social
     hosts: [www.facebook.com]
+    domains: [facebook.com, fbcdn.net, facebook.net, fb.com, messenger.com]
   - id: instagram
     name: Instagram
     category: social
     hosts: [www.instagram.com]
+    domains: [instagram.com, cdninstagram.com]
   - id: tiktok
     name: TikTok
     category: social
     hosts: [www.tiktok.com]
+    domains: [tiktok.com, tiktokcdn.com, tiktokv.com, tiktokcdn-eu.com, byteoversea.com, ibyteimg.com, tiktokv.eu]
   - id: x
     name: X
     category: social
     hosts: [x.com]
+    domains: [x.com, twitter.com, twimg.com, t.co]
   - id: reddit
     name: Reddit
     category: social
     hosts: [www.reddit.com]
+    domains: [reddit.com, redd.it, redditmedia.com, redditstatic.com]
 
   # cloud and work
   - id: microsoft-365
     name: Microsoft 365
     category: cloud_work
     hosts: [outlook.office.com]
+    domains: [office.com, office.net, outlook.com, office365.com, microsoft365.com, sharepoint.com, onedrive.com, live.com, cloud.microsoft]
   - id: github
     name: GitHub
     category: cloud_work
     hosts: [github.com]
+    domains: [github.com, githubusercontent.com, githubassets.com, github.io]
   - id: aws-eu-central-1
     name: AWS Frankfurt
     category: cloud_work

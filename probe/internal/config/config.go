@@ -72,8 +72,47 @@ type Collectors struct {
 	WAN       Periodic  `yaml:"wan"`
 	CPU       Periodic  `yaml:"cpu"`
 	LAN       LAN       `yaml:"lan"`
+	Flows     Flows     `yaml:"flows"`
+	WiFi      WiFi      `yaml:"wifi"`
 	Processes Processes `yaml:"processes"`
 	Clock     Clock     `yaml:"clock"`
+}
+
+// Flows configures the passive measurement of the connections LAN clients
+// open: every TCP and QUIC handshake seen on Interface is split into the
+// client's LAN round trip and the server's WAN round trip. It needs
+// CAP_NET_RAW and uses the LAN collector's salt for client IDs.
+type Flows struct {
+	Enabled   bool   `yaml:"enabled"`
+	Interface string `yaml:"interface"`
+	// Names selects how much of the destination is reported: "category"
+	// (streaming, gaming, ...), "service" (the catalog service, such as
+	// netflix) or "raw", which adds the server name, its address and the
+	// client's address and port. raw is for prototypes on one's own
+	// network only.
+	Names string `yaml:"names"`
+	// MaxPerMinute caps the flow samples; the rest are counted only.
+	MaxPerMinute int `yaml:"max_per_minute"`
+	// ReceiveBuffer is the socket buffer for captured packets.
+	ReceiveBuffer ByteSize `yaml:"receive_buffer"`
+}
+
+// Flow name levels.
+const (
+	FlowNamesCategory = "category"
+	FlowNamesService  = "service"
+	FlowNamesRaw      = "raw"
+)
+
+// WiFi configures the Wi-Fi collector: radio and per-station statistics
+// read with the Broadcom wl utility, and the mesh topology the CPE's
+// EasyMesh controller writes to MeshFile.
+type WiFi struct {
+	Interval time.Duration `yaml:"interval"`
+	// Command is the wl utility; it is looked up in PATH.
+	Command  string        `yaml:"command"`
+	MeshFile string        `yaml:"mesh_file"`
+	Timeout  time.Duration `yaml:"timeout"`
 }
 
 // Periodic is a collector with an interval; zero disables it.
@@ -95,6 +134,10 @@ type LAN struct {
 	// file. Leases outlive the devices that took them, so this adds
 	// clients that are long gone and only ever time out.
 	UseLeases bool `yaml:"use_leases"`
+	// Burst is the number of echo requests sent back to back to each
+	// client. A Wi-Fi client in power save holds the first until it wakes
+	// for the next beacon; the later ones measure the awake round trip.
+	Burst int `yaml:"burst"`
 }
 
 // Processes lists daemons to follow; zero interval disables it.
@@ -375,8 +418,12 @@ func Default() Config {
 			CPU: Periodic{Interval: time.Second},
 			LAN: LAN{
 				Enabled: true, Interval: 5 * time.Second, DiscoverInterval: 30 * time.Second,
-				MaxClients: 32, Interfaces: []string{"br*"}, DisappearAfter: 3,
+				MaxClients: 32, Interfaces: []string{"br*"}, DisappearAfter: 3, Burst: 1,
 			},
+			Flows: Flows{
+				Interface: "br0", Names: FlowNamesService, MaxPerMinute: 1200, ReceiveBuffer: 512 * KiB,
+			},
+			WiFi:      WiFi{Command: "wl", MeshFile: "/tmp/zy1905.json", Timeout: 3 * time.Second},
 			Processes: Processes{Interval: 30 * time.Second, Names: []string{"dnsmasq", "dnscrypt-proxy"}},
 			Clock:     Clock{Interval: time.Minute, Server: "time.cloudflare.com", Timeout: 3 * time.Second},
 		},
@@ -502,7 +549,7 @@ func (c *Config) ProbeRate() float64 {
 	}
 	// LAN pings are counted at the worst case of max_clients.
 	if l := c.Collectors.LAN; l.Enabled && l.Interval > 0 {
-		r += float64(l.MaxClients) / l.Interval.Seconds()
+		r += float64(l.MaxClients*max(l.Burst, 1)) / l.Interval.Seconds()
 	}
 	if cl := c.Collectors.Clock; cl.Interval > 0 {
 		r += 1 / cl.Interval.Seconds()
@@ -827,6 +874,36 @@ func (c *Config) validateCollectors(bad func(string, ...any)) {
 		}
 		if l.DisappearAfter < 1 {
 			bad("collectors.lan.disappear_after must be at least 1")
+		}
+		if l.Burst < 1 || l.Burst > 5 {
+			bad("collectors.lan.burst must be between 1 and 5")
+		}
+	}
+	if f := co.Flows; f.Enabled {
+		if f.Interface == "" {
+			bad("collectors.flows.interface is required")
+		}
+		switch f.Names {
+		case FlowNamesCategory, FlowNamesService, FlowNamesRaw:
+		default:
+			bad("collectors.flows.names %q: want %s, %s or %s", f.Names, FlowNamesCategory, FlowNamesService, FlowNamesRaw)
+		}
+		if f.MaxPerMinute < 1 || f.MaxPerMinute > 100000 {
+			bad("collectors.flows.max_per_minute must be between 1 and 100000")
+		}
+		if f.ReceiveBuffer < 64*KiB || f.ReceiveBuffer > 8*MiB {
+			bad("collectors.flows.receive_buffer must be between 64KiB and 8MiB")
+		}
+	}
+	if w := co.WiFi; w.Interval != 0 {
+		if w.Interval < 2*time.Second {
+			bad("collectors.wifi.interval must be 0 (off) or at least 2s")
+		}
+		if w.Command == "" {
+			bad("collectors.wifi.command is required")
+		}
+		if w.Timeout <= 0 || w.Timeout > w.Interval {
+			bad("collectors.wifi.timeout must be in (0, interval]")
 		}
 	}
 	if p := co.Processes; p.Interval != 0 && p.Interval < 5*time.Second {

@@ -57,7 +57,8 @@ deploy)
 	[ -x "$bin" ] || { echo "missing $bin; run make build-$ARCH" >&2; exit 1; }
 	# configs/local/router.yaml (gitignored) carries deployment-specific
 	# values such as the ingest URL; the example is the fallback.
-	cfg="$ROOT/configs/local/router.yaml"
+	# HEIMDALL_CONFIG selects another file, such as a test configuration.
+	cfg="${HEIMDALL_CONFIG:-$ROOT/configs/local/router.yaml}"
 	[ -f "$cfg" ] || cfg="$ROOT/configs/router.example.yaml"
 	r "mkdir -p $REMOTE/catalog $REMOTE/scripts"
 	r "cat > $REMOTE/heimdall-probe.new && chmod 755 $REMOTE/heimdall-probe.new" < "$bin"

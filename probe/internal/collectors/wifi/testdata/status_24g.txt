@@ -1,0 +1,18 @@
+SSID: "home"
+Mode: Managed	RSSI: 0 dBm	SNR: 0 dB	noise: -87 dBm	Channel: 6
+BSSID: 02:00:00:aa:bb:cc	Capability: ESS ShortSlot RRM 
+Beacon Interval: 100 msecs	
+Supported Rates: [ 1(b) 2(b) 5.5(b) 6 9 11(b) 12 18 24 36 48 54 ]
+HE Capable:
+	Chanspec: 2.4GHz channel 6 20MHz (0x1006)
+	Primary channel: 6
+	HT Capabilities: 40MHz SGI20 SGI40 
+	Supported HT MCS : 0-31
+	Supported HE MCS:
+	    20/40/80 MHz:
+		NSS1 Tx: 0-11        Rx: 0-11
+		NSS2 Tx: 0-11        Rx: 0-11
+		NSS3 Tx: 0-11        Rx: 0-11
+		NSS4 Tx: 0-11        Rx: 0-11
+QBSS Channel Utilization: 0x4f (30 %)
+
