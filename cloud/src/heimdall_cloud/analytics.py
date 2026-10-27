@@ -19,6 +19,15 @@ bucket, read through the Glue tables of the same names:
 ``path_borders``
     Per device and target: where the most frequent path of the day leaves
     the device's own network, the next AS, and the latency added there.
+``daily_client``
+    Per CPE and LAN client: the LAN and WAN parts of the client's own
+    connections, LAN pings, Wi-Fi signal, retries and roaming.
+``daily_client_service``
+    Per CPE, client and service: the WAN part of the client's connections
+    next to the CPE's own TCP probe of the service.
+``daily_crosscheck``
+    Connections of a client device running heimdall-client, matched with
+    the CPE's record of the same connections.
 ``summary``
     One JSON document with the day's headline findings, for the report.
 
@@ -115,6 +124,7 @@ def daily_service(athena: Athena, day: date) -> list[dict[str, Any]]:
           SELECT device, category, service, kind, target_id, ts_ms, status, rtt_ms, {local_hour()} AS lh
           FROM heimdall.samples
           WHERE {day_filter(day)} AND kind IN ({kinds}) AND service IS NOT NULL AND category <> 'home'
+            AND target_id NOT LIKE 'client/%'
         ),
         j AS (
           SELECT device, service, kind,
@@ -193,6 +203,223 @@ def daily_compare(athena: Athena, day: date, control: str) -> list[dict[str, Any
                 "attribution": attribution,
             }
         )
+    return out
+
+
+# Thresholds for the per-client findings. A healthy Wi-Fi client answers a
+# SYN-ACK within a few milliseconds; a wired one within one or two.
+WEAK_RSSI_DBM = -75
+SLOW_LAN_P90_MS = 30.0
+HIGH_RETRY_PCT = 20.0
+MANY_ROAMS = 10
+CLIENT_WAN_RATIO = 1.3
+
+
+def daily_client(athena: Athena, day: date) -> list[dict[str, Any]]:
+    """Per CPE and LAN client: the LAN and WAN parts of the client's own
+    connections (TCP handshakes seen by the CPE), LAN pings, Wi-Fi signal,
+    retries and roaming."""
+    busy = ", ".join(str(h) for h in BUSY_HOURS)
+    night = ", ".join(str(h) for h in NIGHT_HOURS)
+    rows = athena.query(f"""
+        WITH f AS (
+          SELECT device, json_extract_scalar(extra, '$.client') AS client,
+            json_extract_scalar(extra, '$.proto') AS proto, status,
+            CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan,
+            CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan,
+            coalesce(json_extract_scalar(extra, '$.node'), 'cpe') AS node,
+            json_extract_scalar(extra, '$.medium') AS medium, json_extract_scalar(extra, '$.band') AS band,
+            {local_hour()} AS lh
+          FROM heimdall.samples WHERE {day_filter(day)} AND kind = 'flow'
+        ),
+        fa AS (
+          SELECT device, client, count(*) AS flows, count_if(status = 'timeout') AS unanswered,
+            approx_percentile(lan, 0.5) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan_p50,
+            approx_percentile(lan, 0.9) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan_p90,
+            approx_percentile(lan, 0.5) FILTER (WHERE proto = 'tcp' AND status = 'ok' AND lh IN ({busy}))
+              AS lan_busy_p50,
+            approx_percentile(lan, 0.5) FILTER (WHERE proto = 'tcp' AND status = 'ok' AND lh IN ({night}))
+              AS lan_night_p50,
+            approx_percentile(wan, 0.5) FILTER (WHERE status = 'ok') AS wan_p50,
+            approx_percentile(wan, 0.9) FILTER (WHERE status = 'ok') AS wan_p90,
+            max_by(node, lh) AS node, max_by(medium, lh) AS medium, max_by(band, lh) AS band
+          FROM f WHERE client IS NOT NULL GROUP BY 1, 2
+        ),
+        w AS (
+          SELECT device, json_extract_scalar(extra, '$.client') AS client,
+            avg(CAST(json_extract_scalar(extra, '$.rssi') AS double)) AS rssi_avg,
+            min(CAST(json_extract_scalar(extra, '$.rssi') AS double)) AS rssi_min,
+            avg(CAST(json_extract_scalar(extra, '$.snr') AS double)) AS snr_avg,
+            100.0 * sum(CAST(json_extract_scalar(extra, '$.tx_retries') AS double))
+              / nullif(sum(CAST(json_extract_scalar(extra, '$.tx_sent') AS double)), 0) AS retry_pct,
+            approx_percentile(CAST(json_extract_scalar(extra, '$.tx_rate_mbps') AS double), 0.5) AS tx_rate_p50,
+            avg(CASE json_extract_scalar(extra, '$.ps') WHEN 'true' THEN 1.0 WHEN 'false' THEN 0.0 END) AS ps_share,
+            max_by(json_extract_scalar(extra, '$.node'), ts_ms) AS wifi_node,
+            max_by(json_extract_scalar(extra, '$.band'), ts_ms) AS wifi_band
+          FROM heimdall.samples
+          WHERE {day_filter(day)} AND kind = 'wifi_sta' AND json_extract_scalar(extra, '$.client') IS NOT NULL
+          GROUP BY 1, 2
+        ),
+        p AS (
+          SELECT device, substr(target_id, 5) AS client,
+            approx_percentile(rtt_ms, 0.5) FILTER (WHERE status = 'ok') AS ping_p50,
+            approx_percentile(rtt_ms, 0.95) FILTER (WHERE status = 'ok') AS ping_p95,
+            approx_percentile(CAST(json_extract_scalar(extra, '$.burst_ms[0]') AS double), 0.5) AS ping_first_p50,
+            100.0 * count_if(status <> 'ok') / count(*) AS ping_loss_pct
+          FROM heimdall.samples WHERE {day_filter(day)} AND kind = 'lan'
+          GROUP BY 1, 2
+        ),
+        e AS (
+          SELECT device, json_extract_scalar(extra, '$.client') AS client,
+            count_if(json_extract_scalar(extra, '$.event') = 'wifi_roam') AS roams,
+            count_if(json_extract_scalar(extra, '$.event') = 'wifi_leave') AS leaves
+          FROM heimdall.samples
+          WHERE {day_filter(day)} AND kind = 'event'
+            AND json_extract_scalar(extra, '$.event') IN ('wifi_roam', 'wifi_leave')
+          GROUP BY 1, 2
+        ),
+        k AS (
+          SELECT device, client FROM fa UNION SELECT device, client FROM w UNION SELECT device, client FROM p
+        )
+        SELECT k.device, k.client, coalesce(fa.node, w.wifi_node, 'cpe') AS node, fa.medium,
+          coalesce(w.wifi_band, fa.band) AS band, fa.flows, fa.unanswered, fa.lan_p50, fa.lan_p90,
+          fa.lan_busy_p50, fa.lan_night_p50, fa.wan_p50, fa.wan_p90,
+          w.rssi_avg, w.rssi_min, w.snr_avg, w.retry_pct, w.tx_rate_p50, w.ps_share,
+          p.ping_p50, p.ping_p95, p.ping_first_p50, p.ping_loss_pct, e.roams, e.leaves
+        FROM k
+        LEFT JOIN fa ON fa.device = k.device AND fa.client = k.client
+        LEFT JOIN w ON w.device = k.device AND w.client = k.client
+        LEFT JOIN p ON p.device = k.device AND p.client = k.client
+        LEFT JOIN e ON e.device = k.device AND e.client = k.client
+    """)  # noqa: S608 - only dates, constants and validated device IDs are interpolated
+    nums = (
+        "lan_p50", "lan_p90", "lan_busy_p50", "lan_night_p50", "wan_p50", "wan_p90", "rssi_avg", "rssi_min",
+        "snr_avg", "retry_pct", "tx_rate_p50", "ps_share", "ping_p50", "ping_p95", "ping_first_p50", "ping_loss_pct",
+    )  # fmt: skip
+    out = []
+    for r in rows:
+        rec: dict[str, Any] = {k: r[k] for k in ("device", "client", "node", "medium", "band")}
+        for k in ("flows", "unanswered", "roams", "leaves"):
+            rec[k] = _int(r[k]) or 0
+        for k in nums:
+            rec[k] = _num(r[k])
+        out.append(rec)
+    return out
+
+
+def client_services(athena: Athena, day: date) -> list[dict[str, Any]]:
+    """Per CPE, LAN client and service: the WAN part of the client's own
+    connections next to the CPE's own TCP probe of the same service. A
+    client much slower than the CPE's probe reaches other servers (another
+    CDN node) or meets queueing the probe does not."""
+    rows = athena.query(f"""
+        WITH f AS (
+          SELECT device, json_extract_scalar(extra, '$.client') AS client, service, category,
+            count(*) AS flows, approx_percentile(CAST(json_extract_scalar(extra, '$.wan_ms') AS double), 0.5) AS wan_p50
+          FROM heimdall.samples
+          WHERE {day_filter(day)} AND kind = 'flow' AND status = 'ok' AND service IS NOT NULL AND service <> 'other'
+          GROUP BY 1, 2, 3, 4
+        ),
+        t AS (
+          SELECT device, service, approx_percentile(rtt_ms, 0.5) AS cpe_tcp_p50
+          FROM heimdall.samples
+          WHERE {day_filter(day)} AND kind = 'tcp' AND status = 'ok' AND target_id NOT LIKE 'client/%'
+          GROUP BY 1, 2
+        )
+        SELECT f.device, f.client, f.service, f.category, f.flows, f.wan_p50, t.cpe_tcp_p50
+        FROM f LEFT JOIN t ON t.device = f.device AND t.service = f.service
+    """)  # noqa: S608 - only dates, constants and validated device IDs are interpolated
+    out = []
+    for r in rows:
+        wan, cpe = _num(r["wan_p50"]), _num(r["cpe_tcp_p50"])
+        out.append(
+            {
+                "device": r["device"],
+                "client": r["client"],
+                "service": r["service"],
+                "category": r["category"],
+                "flows": _int(r["flows"]),
+                "wan_p50": wan,
+                "cpe_tcp_p50": cpe,
+                "ratio": wan / cpe if wan and cpe else None,
+            }
+        )
+    return out
+
+
+def client_crosscheck(athena: Athena, day: date) -> list[dict[str, Any]]:
+    """Connections a client device (heimdall-client) opened, matched with
+    the CPE's record of the same connections by client address, port and
+    server: what the client measured next to the CPE's WAN and LAN parts."""
+    rows = athena.query(f"""
+        WITH c AS (
+          SELECT device AS client_device, ts_ms, service, dst_ip, rtt_ms AS client_ms,
+            json_extract_scalar(extra, '$.local_ip') AS ip,
+            CAST(json_extract_scalar(extra, '$.local_port') AS integer) AS port
+          FROM heimdall.samples
+          WHERE {day_filter(day)} AND kind = 'tcp' AND target_id LIKE 'client/%' AND target_id <> 'client/gateway-tcp'
+            AND status = 'ok'
+        ),
+        f AS (
+          SELECT device, ts_ms, dst_ip, json_extract_scalar(extra, '$.client') AS client,
+            json_extract_scalar(extra, '$.client_ip') AS ip,
+            CAST(json_extract_scalar(extra, '$.client_port') AS integer) AS port,
+            CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan,
+            CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan
+          FROM heimdall.samples
+          WHERE {day_filter(day)} AND kind = 'flow' AND status = 'ok' AND json_extract_scalar(extra, '$.proto') = 'tcp'
+        )
+        SELECT f.device, c.client_device, arbitrary(f.client) AS client, c.service, count(*) AS matched,
+          approx_percentile(c.client_ms, 0.5) AS client_p50,
+          approx_percentile(f.wan, 0.5) AS cpe_wan_p50,
+          approx_percentile(f.lan, 0.5) AS cpe_lan_p50,
+          approx_percentile(c.client_ms - f.wan - f.lan, 0.5) AS gap_p50,
+          approx_percentile(c.client_ms - f.wan - f.lan, 0.9) AS gap_p90
+        FROM c JOIN f ON c.ip = f.ip AND c.port = f.port AND c.dst_ip = f.dst_ip AND abs(c.ts_ms - f.ts_ms) < 5000
+        GROUP BY f.device, c.client_device, c.service
+    """)  # noqa: S608 - only dates, constants and validated device IDs are interpolated
+    return [
+        {
+            "device": r["device"],
+            "client_device": r["client_device"],
+            "client": r["client"],
+            "service": r["service"],
+            "matched": _int(r["matched"]),
+            **{k: _num(r[k]) for k in ("client_p50", "cpe_wan_p50", "cpe_lan_p50", "gap_p50", "gap_p90")},
+        }
+        for r in rows
+    ]
+
+
+def client_findings(clients: list[dict[str, Any]], services: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Clients of one CPE, most connections first, with what stands out."""
+    by_client: dict[str, list[float]] = defaultdict(list)
+    for s in services:
+        if s["ratio"] and (s["flows"] or 0) >= 5:
+            by_client[s["client"]].append(s["ratio"])
+    out = []
+    for c in sorted(clients, key=lambda c: -(c["flows"] or 0)):
+        flags = []
+        if c["rssi_avg"] is not None and c["rssi_avg"] <= WEAK_RSSI_DBM:
+            flags.append("weak_signal")
+        if c["lan_p90"] is not None and c["lan_p90"] >= SLOW_LAN_P90_MS:
+            flags.append("slow_lan")
+        if c["retry_pct"] is not None and c["retry_pct"] >= HIGH_RETRY_PCT:
+            flags.append("many_retries")
+        if c["roams"] >= MANY_ROAMS:
+            flags.append("roaming")
+        ratios = by_client.get(c["client"], [])
+        wan_ratio = statistics.median(ratios) if ratios else None
+        if wan_ratio is not None and wan_ratio >= CLIENT_WAN_RATIO:
+            flags.append("wan_slower_than_cpe_probe")
+        rec = {k: v for k, v in c.items() if k != "device" and v is not None}
+        for k, v in rec.items():
+            if isinstance(v, float):
+                rec[k] = round(v, 1)
+        if wan_ratio is not None:
+            rec["wan_vs_cpe_probe"] = round(wan_ratio, 2)
+        rec["flags"] = flags
+        out.append(rec)
     return out
 
 
@@ -366,6 +593,9 @@ def summarize(
     incs: list[dict[str, Any]],
     asn_names: dict[int, str],
     control: str,
+    clients: list[dict[str, Any]] | None = None,
+    client_svc: list[dict[str, Any]] | None = None,
+    crosscheck: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The day's headline findings per CPE device."""
     devices = sorted({s["device"] for s in services if s["device"] != control})
@@ -410,6 +640,18 @@ def summarize(
             ],
             "incidents": [i for i in incs if i["device"] == dev],
         }
+        mine = [c for c in clients or [] if c["device"] == dev]
+        if mine:
+            out["devices"][dev]["lan_clients"] = client_findings(
+                mine, [s for s in client_svc or [] if s["device"] == dev]
+            )[:15]
+        cross = [
+            {k: (round(v, 1) if isinstance(v, float) else v) for k, v in x.items() if k != "device"}
+            for x in crosscheck or []
+            if x["device"] == dev
+        ]
+        if cross:
+            out["devices"][dev]["client_crosscheck"] = cross
     return out
 
 
@@ -519,7 +761,14 @@ def run(
     events = external.ioda_day(day, [("asn", str(a)) for a in cpe_asns] + [("country", country)], fetch)
     store.put_rows("external_events", day, events)
 
-    summary = summarize(day, services, compare, borders, incs, names, control)
+    clients = daily_client(athena, day)
+    store.put_rows("daily_client", day, clients)
+    client_svc = client_services(athena, day)
+    store.put_rows("daily_client_service", day, client_svc)
+    crosscheck = client_crosscheck(athena, day)
+    store.put_rows("daily_crosscheck", day, crosscheck)
+
+    summary = summarize(day, services, compare, borders, incs, names, control, clients, client_svc, crosscheck)
     for dev, s in summary["devices"].items():
         s["external"] = external_context(dev, services, atlas, events, home_asn.get(dev))
     store.put_doc("summary", day, summary)
@@ -531,6 +780,9 @@ def run(
         "incidents": len(incs),
         "atlas_ping": len(atlas),
         "external_events": len(events),
+        "daily_client": len(clients),
+        "daily_client_service": len(client_svc),
+        "daily_crosscheck": len(crosscheck),
     }
     log.info(json.dumps({"day": day.isoformat(), **counts}))
     return {"day": day.isoformat(), **counts}

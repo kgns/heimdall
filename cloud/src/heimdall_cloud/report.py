@@ -52,13 +52,28 @@ degraded too (points at the service); no_control: the control does not measure i
 - external.k-root / f-root: this CPE's median RTT and busy-hour inflation towards the root servers, next \
 to the median of the other RIPE Atlas probes in the same ISP. external.ioda_events: outages IODA detected \
 for the ISP's AS or the country.
+- lan_clients: the devices in the home, from the CPE's passive view of every connection they opened. \
+lan_p50/lan_p90: the client's reply time to the server's SYN-ACK, measured at the CPE (the Wi-Fi or \
+Ethernet round trip plus the client's own delay; a few ms is normal for Wi-Fi, 1-2 ms for Ethernet). \
+wan_p50/wan_p90: the server's answer to the client's SYN, the internet part. lan_busy_p50/lan_night_p50: \
+LAN part in the evening and at night. node: the CPE or a mesh extender; band; rssi_avg/rssi_min (dBm, \
+below -75 is weak); retry_pct: share of frames the CPE had to retransmit to the client; roams: moves \
+between nodes or radios; ping_p50 / ping_first_p50: echo round trip when awake / when the client had to \
+wake from power save first (power save, not a fault). wan_vs_cpe_probe: the client's WAN part over the \
+CPE's own TCP probe of the same services; above 1.3 the client reaches other servers or meets queueing. \
+flags summarise what stands out.
+- client_crosscheck: a laptop running heimdall-client, its own TCP connect times matched with the CPE's \
+split of the same connections. gap: what the laptop sees beyond the CPE's WAN plus LAN parts.
 - trend: the same headline numbers for the previous days, oldest first."""
 
-INSTRUCTIONS = """Write the report in Markdown, at most about 350 words, with these parts:
+INSTRUCTIONS = """Write the report in Markdown, at most about 450 words, with these parts:
 1. Verdict: one or two sentences. Was there an ISP-side problem, a service-side problem, or nothing notable?
 2. Findings: bullet points, most important first: evening congestion, loss, ISP-side versus service-side \
 degraded hours, peering and transit observations, incidents, comparison with other lines of the ISP.
-3. Worth raising with the ISP: only concrete, evidenced items (service, time, numbers, AS), or "nothing".
+3. Home network: when lan_clients is present, which clients have a slow or unstable LAN part and why \
+(signal, retries, roaming, extender), and whether any client's internet part differs from the CPE's own \
+measurements. Mention the client_crosscheck result when present. Skip this part when there are no clients.
+4. Worth raising with the ISP: only concrete, evidenced items (service, time, numbers, AS), or "nothing".
 Use the device name and the date in the title."""
 
 
@@ -73,6 +88,11 @@ def headline(summary: dict[str, Any], device: str) -> dict[str, Any]:
         "service_side_hours": sum(v.get("service", 0) for v in d.get("degraded_hours", {}).values()),
         "incidents": len(d.get("incidents", [])),
         "k_root": ext.get("k-root"),
+        "lan_clients_flagged": [
+            {"client": c.get("client"), "node": c.get("node"), "flags": c.get("flags")}
+            for c in d.get("lan_clients", [])
+            if c.get("flags")
+        ][:5],
     }
 
 
@@ -97,6 +117,8 @@ def fallback_report(summary: dict[str, Any], device: str) -> str:
     if h["loss"]:
         lines.append("- Loss: " + ", ".join(f"{x['service']} {x['loss_pct']}%" for x in h["loss"]))
     lines.append(f"- Incidents detected: {h['incidents']}")
+    for c in h["lan_clients_flagged"]:
+        lines.append(f"- LAN client {c['client']} on {c['node']}: {', '.join(c['flags'])}")
     if k := h.get("k_root"):
         lines.append(
             f"- k.root: this line {k.get('cpe_p50')} ms, other lines of the ISP {k.get('peer_p50')} ms "

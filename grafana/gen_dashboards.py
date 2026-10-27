@@ -44,6 +44,8 @@ def sql(text: str, **subs: str) -> str:
     # Expanded first because it contains {R}.
     if "{INC}" in text:
         text = text.replace("{INC}", INCIDENTS)
+    if "{FLOWS}" in text or "{M}" in text:
+        text = text.replace("{FLOWS}", FLOWS).replace("{M}", MATCHED)
     if "{D}" in text or "{ASN}" in text:
         text = text.replace("{D}", DAYS).replace("{ASN}", AS_NAMES)
     subs = {"RA": RANGE_ALL, "R": RANGE, "B": BUCKET, "S": SERVICES, "CLOUD": CLOUD_DEVICE, **subs}
@@ -1130,9 +1132,342 @@ def daily() -> dict[str, Any]:
     return d
 
 
+# LAN client connections seen by the CPE's flow collector. lan is the client's
+# reply time to the server's SYN-ACK, wan the server's answer to the SYN.
+# QUIC LAN times include the client's handshake processing, so LAN panels use
+# TCP only.
+FLOWS = """
+SELECT ts_ms, {B} AS time, service, category,
+  json_extract_scalar(extra, '$.client') AS client,
+  coalesce(json_extract_scalar(extra, '$.node'), 'cpe') AS node,
+  json_extract_scalar(extra, '$.medium') AS medium,
+  json_extract_scalar(extra, '$.band') AS band,
+  json_extract_scalar(extra, '$.proto') AS proto,
+  CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan,
+  CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan,
+  CAST(json_extract_scalar(extra, '$.rssi') AS integer) AS rssi,
+  status
+FROM heimdall.samples
+WHERE {R} AND kind = 'flow'
+"""
+CLIENT = var(
+    "client",
+    "SELECT DISTINCT json_extract_scalar(extra, '$.client') FROM heimdall.samples WHERE device = '$device'"
+    " AND dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'flow' ORDER BY 1",
+)
+CLIENT_DEVICE = var(
+    "clientdev",
+    "SELECT DISTINCT device FROM heimdall.samples WHERE dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd')"
+    " AND kind = 'tcp' AND target_id LIKE 'client/%' ORDER BY 1",
+    "client device",
+)
+# The client device's own TCP connects, matched with the CPE's record of
+# the same connection by client address, port and server.
+MATCHED = """
+WITH c AS (
+  SELECT ts_ms, service, dst_ip, rtt_ms AS client_ms,
+    json_extract_scalar(extra, '$.local_ip') AS ip,
+    CAST(json_extract_scalar(extra, '$.local_port') AS integer) AS port
+  FROM heimdall.samples
+  WHERE device = '$clientdev' AND {RA} AND kind = 'tcp' AND target_id LIKE 'client/%' AND status = 'ok'
+    AND target_id <> 'client/gateway-tcp'
+),
+f AS (
+  SELECT ts_ms, dst_ip,
+    json_extract_scalar(extra, '$.client_ip') AS ip,
+    CAST(json_extract_scalar(extra, '$.client_port') AS integer) AS port,
+    CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan,
+    CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan
+  FROM heimdall.samples
+  WHERE {R} AND kind = 'flow' AND status = 'ok' AND json_extract_scalar(extra, '$.proto') = 'tcp'
+),
+m AS (
+  SELECT c.ts_ms, c.service, c.client_ms, f.wan, f.lan
+  FROM c JOIN f ON c.ip = f.ip AND c.port = f.port AND c.dst_ip = f.dst_ip AND abs(c.ts_ms - f.ts_ms) < 5000
+)
+"""
+
+
+def clients() -> dict[str, Any]:
+    L = Layout()
+    p = [L.row("Connections of LAN clients (passive, every TCP and QUIC handshake)")]
+    p += [
+        L.place(
+            table(
+                "Clients over the range",
+                """
+                WITH f AS ({FLOWS})
+                SELECT client, arbitrary(node) AS node, arbitrary(medium) AS medium, arbitrary(band) AS band,
+                  count(*) AS flows,
+                  approx_percentile(lan, 0.5) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan_p50,
+                  approx_percentile(lan, 0.9) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan_p90,
+                  approx_percentile(wan, 0.5) FILTER (WHERE status = 'ok') AS wan_p50,
+                  100.0 * count_if(status = 'timeout') / count(*) AS unanswered,
+                  avg(rssi) AS rssi
+                FROM f GROUP BY 1 ORDER BY flows DESC
+                """,
+                "lan is the client's reply time to the server's SYN-ACK, measured at the CPE: the Wi-Fi or "
+                "Ethernet round trip plus the client's own delay. wan is SYN to SYN-ACK. unanswered are SYNs "
+                "the server never answered.",
+                units={"lan_p50": "ms", "lan_p90": "ms", "wan_p50": "ms", "unanswered": "percent", "rssi": "dBm"},
+            ),
+            24,
+            8,
+        ),
+        L.place(
+            series(
+                "LAN round trip p50 by client (TCP)",
+                """
+                WITH f AS ({FLOWS})
+                SELECT time, client || ' ' || node AS metric, approx_percentile(lan, 0.5) AS value
+                FROM f WHERE proto = 'tcp' AND status = 'ok' GROUP BY 1, 2 ORDER BY 1
+                """,
+                "ms",
+            ),
+            12,
+            9,
+        ),
+        L.place(
+            series(
+                "WAN round trip p50 by client",
+                """
+                WITH f AS ({FLOWS})
+                SELECT time, client || ' ' || node AS metric, approx_percentile(wan, 0.5) AS value
+                FROM f WHERE status = 'ok' GROUP BY 1, 2 ORDER BY 1
+                """,
+                "ms",
+            ),
+            12,
+            9,
+        ),
+    ]
+    p.append(L.row("One client: $client"))
+    p += [
+        L.place(
+            series(
+                "LAN, WAN and LAN ping of $client",
+                """
+                WITH f AS ({FLOWS})
+                SELECT time, 'lan (tcp handshake)' AS metric, approx_percentile(lan, 0.5) AS value
+                FROM f WHERE client = '$client' AND proto = 'tcp' AND status = 'ok' GROUP BY 1, 2
+                UNION ALL
+                SELECT time, 'wan (tcp handshake)', approx_percentile(wan, 0.5)
+                FROM f WHERE client = '$client' AND status = 'ok' GROUP BY 1, 2
+                UNION ALL
+                SELECT {B}, 'lan ping (best of burst)', approx_percentile(rtt_ms, 0.5)
+                FROM heimdall.samples WHERE {R} AND kind = 'lan' AND status = 'ok' AND target_id = 'lan/$client' GROUP BY 1, 2
+                UNION ALL
+                SELECT {B}, 'lan ping (first of burst)',
+                  approx_percentile(CAST(json_extract_scalar(extra, '$.burst_ms[0]') AS double), 0.5)
+                FROM heimdall.samples WHERE {R} AND kind = 'lan' AND target_id = 'lan/$client' GROUP BY 1, 2
+                ORDER BY 1
+                """,
+                "ms",
+                "The first echo of a burst waits for a client in power save to wake for a beacon; the rest show "
+                "the awake round trip.",
+            ),
+            12,
+            9,
+        ),
+        L.place(
+            table(
+                "Services of $client",
+                """
+                WITH f AS ({FLOWS})
+                SELECT category, service, count(*) AS flows,
+                  approx_percentile(wan, 0.5) FILTER (WHERE status = 'ok') AS wan_p50,
+                  approx_percentile(wan, 0.9) FILTER (WHERE status = 'ok') AS wan_p90,
+                  approx_percentile(lan, 0.5) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan_p50,
+                  count_if(status = 'timeout') AS unanswered
+                FROM f WHERE client = '$client' GROUP BY 1, 2 ORDER BY flows DESC
+                """,
+                units={"wan_p50": "ms", "wan_p90": "ms", "lan_p50": "ms"},
+            ),
+            12,
+            9,
+        ),
+    ]
+    p.append(L.row("Wi-Fi"))
+    p += [
+        L.place(
+            series(
+                "Signal (RSSI) by client",
+                """
+                SELECT {B} AS time, json_extract_scalar(extra, '$.client') || ' ' || json_extract_scalar(extra, '$.node')
+                  || ' ' || json_extract_scalar(extra, '$.band') AS metric,
+                  avg(CAST(json_extract_scalar(extra, '$.rssi') AS double)) AS value
+                FROM heimdall.samples WHERE {R} AND kind = 'wifi_sta' AND json_extract_scalar(extra, '$.rssi') IS NOT NULL
+                GROUP BY 1, 2 ORDER BY 1
+                """,
+                "dBm",
+                "Clients of the CPE come from wl; clients of mesh extenders from the EasyMesh topology.",
+                min0=False,
+            ),
+            12,
+            9,
+        ),
+        L.place(
+            series(
+                "Transmit retries to clients of the CPE",
+                """
+                SELECT {B} AS time, json_extract_scalar(extra, '$.client') AS metric,
+                  100.0 * sum(CAST(json_extract_scalar(extra, '$.tx_retries') AS double))
+                    / nullif(sum(CAST(json_extract_scalar(extra, '$.tx_sent') AS double)), 0) AS value
+                FROM heimdall.samples WHERE {R} AND kind = 'wifi_sta' AND json_extract_scalar(extra, '$.source') = 'wl'
+                GROUP BY 1, 2 ORDER BY 1
+                """,
+                "percent",
+            ),
+            12,
+            9,
+        ),
+        L.place(
+            series(
+                "Radio airtime",
+                """
+                SELECT {B} AS time, json_extract_scalar(extra, '$.band') || ' ' || m.name AS metric, avg(m.v) AS value
+                FROM heimdall.samples
+                CROSS JOIN UNNEST(
+                  ARRAY['busy', 'obss', 'inbss', 'tx'],
+                  ARRAY[CAST(json_extract_scalar(extra, '$.chanim_busy') AS double),
+                        CAST(json_extract_scalar(extra, '$.chanim_obss') AS double),
+                        CAST(json_extract_scalar(extra, '$.chanim_inbss') AS double),
+                        CAST(json_extract_scalar(extra, '$.chanim_tx') AS double)]) AS m(name, v)
+                WHERE {R} AND kind = 'wifi_radio'
+                GROUP BY 1, 2 ORDER BY 1
+                """,
+                "percent",
+                "busy: channel busy; obss: neighbouring networks; inbss: this network's clients; tx: the CPE "
+                "transmitting.",
+            ),
+            12,
+            9,
+        ),
+        L.place(
+            series(
+                "PHY rate to clients",
+                """
+                SELECT {B} AS time, json_extract_scalar(extra, '$.client') || ' ' || json_extract_scalar(extra, '$.node') AS metric,
+                  avg(CAST(json_extract_scalar(extra, '$.tx_rate_mbps') AS double)) AS value
+                FROM heimdall.samples WHERE {R} AND kind = 'wifi_sta'
+                GROUP BY 1, 2 ORDER BY 1
+                """,
+                "Mbits",
+            ),
+            12,
+            9,
+        ),
+        L.place(
+            table(
+                "Wi-Fi events",
+                """
+                SELECT CAST(from_unixtime(ts_ms / 1000.0) AS timestamp) AS time,
+                  json_extract_scalar(extra, '$.event') AS event, json_extract_scalar(extra, '$.client') AS client,
+                  json_extract_scalar(extra, '$.node') AS node, json_extract_scalar(extra, '$.band') AS band,
+                  coalesce(json_extract_scalar(extra, '$.from'), json_extract_scalar(extra, '$.prev_chanspec')) AS before,
+                  json_extract_scalar(extra, '$.chanspec') AS chanspec
+                FROM heimdall.samples
+                WHERE {R} AND kind = 'event' AND json_extract_scalar(extra, '$.event') LIKE 'wifi\\_%' ESCAPE '\\'
+                ORDER BY ts_ms DESC LIMIT 200
+                """,
+            ),
+            24,
+            8,
+        ),
+    ]
+    p.append(L.row("Cross-check with a client device ($clientdev)"))
+    p += [
+        L.place(
+            series(
+                "Connect time: client vs CPE split",
+                """
+                {M}
+                SELECT {B} AS time, 'client connect' AS metric, approx_percentile(client_ms, 0.5) AS value FROM m GROUP BY 1, 2
+                UNION ALL SELECT {B}, 'cpe wan + lan', approx_percentile(wan + lan, 0.5) FROM m GROUP BY 1, 2
+                UNION ALL SELECT {B}, 'cpe wan', approx_percentile(wan, 0.5) FROM m GROUP BY 1, 2
+                UNION ALL SELECT {B}, 'cpe lan', approx_percentile(lan, 0.5) FROM m GROUP BY 1, 2
+                ORDER BY 1
+                """,
+                "ms",
+                "The client device's TCP connects and the CPE's record of the same connections.",
+            ),
+            12,
+            9,
+        ),
+        L.place(
+            table(
+                "Client vs CPE by service",
+                """
+                {M}
+                SELECT service, count(*) AS matched,
+                  approx_percentile(client_ms, 0.5) AS client_p50,
+                  approx_percentile(wan, 0.5) AS cpe_wan_p50,
+                  approx_percentile(lan, 0.5) AS cpe_lan_p50,
+                  approx_percentile(client_ms - wan - lan, 0.5) AS gap_p50
+                FROM m GROUP BY 1 ORDER BY 1
+                """,
+                "gap is what the client sees beyond the CPE's split: its own network stack and the parts of the "
+                "LAN path the handshake does not cover.",
+                units={"client_p50": "ms", "cpe_wan_p50": "ms", "cpe_lan_p50": "ms", "gap_p50": "ms"},
+            ),
+            12,
+            9,
+        ),
+        L.place(
+            series(
+                "Client to CPE: client's view vs CPE's view",
+                """
+                SELECT {B} AS time, 'client icmp to cpe' AS metric, approx_percentile(rtt_ms, 0.5) AS value
+                FROM heimdall.samples WHERE device = '$clientdev' AND {RA} AND target_id = 'client/gateway' AND status = 'ok'
+                GROUP BY 1, 2
+                UNION ALL
+                SELECT {B}, 'client tcp to cpe', approx_percentile(rtt_ms, 0.5)
+                FROM heimdall.samples WHERE device = '$clientdev' AND {RA} AND target_id = 'client/gateway-tcp' AND status = 'ok'
+                GROUP BY 1, 2
+                UNION ALL
+                SELECT {B}, 'cpe lan (handshakes of client)', approx_percentile(lan, 0.5)
+                FROM ({M} SELECT ts_ms, lan FROM m) GROUP BY 1, 2
+                ORDER BY 1
+                """,
+                "ms",
+            ),
+            12,
+            9,
+        ),
+        L.place(
+            series(
+                "Client's own Wi-Fi reading",
+                """
+                SELECT {B} AS time, m.name AS metric, avg(m.v) AS value
+                FROM heimdall.samples
+                CROSS JOIN UNNEST(
+                  ARRAY['rssi', 'noise'],
+                  ARRAY[CAST(json_extract_scalar(extra, '$.rssi') AS double),
+                        CAST(json_extract_scalar(extra, '$.noise') AS double)]) AS m(name, v)
+                WHERE device = '$clientdev' AND {RA} AND kind = 'wifi_sta' AND target_id = 'client/wifi'
+                GROUP BY 1, 2 ORDER BY 1
+                """,
+                "dBm",
+                min0=False,
+            ),
+            12,
+            9,
+        ),
+    ]
+    d = dashboard("heimdall-clients", "heimdall / LAN clients", p, [DEVICE, CLIENT, CLIENT_DEVICE])
+    d["time"] = {"from": "now-3h", "to": "now"}
+    return d
+
+
 def main() -> None:
     OUT.mkdir(exist_ok=True)
-    for name, build in (("overview", overview), ("service", service), ("network", network), ("daily", daily)):
+    for name, build in (
+        ("overview", overview),
+        ("service", service),
+        ("network", network),
+        ("daily", daily),
+        ("clients", clients),
+    ):
         (OUT / f"{name}.json").write_text(json.dumps(build(), indent=2) + "\n")
 
 

@@ -16,8 +16,19 @@ case "$repo" in
 	exit 1
 	;;
 esac
+# The ECR login goes to a private, temporary Docker config instead of the
+# user's credential helper: the helper of Docker Desktop on WSL times out
+# when two images are pushed at once, and the short-lived ECR token need
+# not outlive this script.
+cfg="$(mktemp -d)"
+trap 'rm -rf "$cfg"' EXIT
+for d in buildx contexts cli-plugins; do
+	[ -e "$HOME/.docker/$d" ] && ln -s "$HOME/.docker/$d" "$cfg/$d"
+done
+echo '{}' >"$cfg/config.json"
+export DOCKER_CONFIG="$cfg"
 aws ecr get-login-password --profile "$PROFILE" --region "$REGION" |
-	docker login --username AWS --password-stdin "${repo%%/*}" >/dev/null
+	docker login --username AWS --password-stdin "${repo%%/*}" >/dev/null 2>&1
 # Single-platform image without attestations, so ECR holds one manifest per
 # tag and Lambda accepts it.
 docker buildx build --platform linux/arm64 --provenance=false --sbom=false \

@@ -39,6 +39,32 @@ locals {
         ["datasource", "string"], ["method", "string"], ["score", "double"],
       ]
     }
+    daily_client = {
+      description = "Per CPE and LAN client: LAN and WAN parts of the client's connections, LAN pings, Wi-Fi signal, retries and roaming"
+      columns = [
+        ["device", "string"], ["client", "string"], ["node", "string"], ["medium", "string"], ["band", "string"],
+        ["flows", "bigint"], ["unanswered", "bigint"], ["roams", "bigint"], ["leaves", "bigint"],
+        ["lan_p50", "double"], ["lan_p90", "double"], ["lan_busy_p50", "double"], ["lan_night_p50", "double"],
+        ["wan_p50", "double"], ["wan_p90", "double"], ["rssi_avg", "double"], ["rssi_min", "double"],
+        ["snr_avg", "double"], ["retry_pct", "double"], ["tx_rate_p50", "double"], ["ps_share", "double"],
+        ["ping_p50", "double"], ["ping_p95", "double"], ["ping_first_p50", "double"], ["ping_loss_pct", "double"],
+      ]
+    }
+    daily_client_service = {
+      description = "Per CPE, LAN client and service: WAN part of the client's connections next to the CPE's own TCP probe"
+      columns = [
+        ["device", "string"], ["client", "string"], ["service", "string"], ["category", "string"],
+        ["flows", "bigint"], ["wan_p50", "double"], ["cpe_tcp_p50", "double"], ["ratio", "double"],
+      ]
+    }
+    daily_crosscheck = {
+      description = "Connections of a heimdall-client device matched with the CPE's split of the same connections"
+      columns = [
+        ["device", "string"], ["client_device", "string"], ["client", "string"], ["service", "string"],
+        ["matched", "bigint"], ["client_p50", "double"], ["cpe_wan_p50", "double"], ["cpe_lan_p50", "double"],
+        ["gap_p50", "double"], ["gap_p90", "double"],
+      ]
+    }
     path_borders = {
       description = "Per device and target: where the day's most frequent path leaves the device's own network"
       columns = [

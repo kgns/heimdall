@@ -1,0 +1,1145 @@
+{
+  "uid": "heimdall-clients",
+  "title": "heimdall / LAN clients",
+  "tags": [
+    "heimdall"
+  ],
+  "timezone": "browser",
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 41,
+  "time": {
+    "from": "now-3h",
+    "to": "now"
+  },
+  "refresh": "",
+  "templating": {
+    "list": [
+      {
+        "name": "device",
+        "label": "device",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-athena-datasource",
+          "uid": "athena"
+        },
+        "query": {
+          "refId": "device",
+          "format": 1,
+          "rawSQL": "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'heartbeat'",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        },
+        "definition": "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'heartbeat'",
+        "refresh": 2,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "current": {}
+      },
+      {
+        "name": "client",
+        "label": "client",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-athena-datasource",
+          "uid": "athena"
+        },
+        "query": {
+          "refId": "client",
+          "format": 1,
+          "rawSQL": "SELECT DISTINCT json_extract_scalar(extra, '$.client') FROM heimdall.samples WHERE device = '$device' AND dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'flow' ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        },
+        "definition": "SELECT DISTINCT json_extract_scalar(extra, '$.client') FROM heimdall.samples WHERE device = '$device' AND dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'flow' ORDER BY 1",
+        "refresh": 2,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "current": {}
+      },
+      {
+        "name": "clientdev",
+        "label": "client device",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-athena-datasource",
+          "uid": "athena"
+        },
+        "query": {
+          "refId": "clientdev",
+          "format": 1,
+          "rawSQL": "SELECT DISTINCT device FROM heimdall.samples WHERE dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND kind = 'tcp' AND target_id LIKE 'client/%' ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        },
+        "definition": "SELECT DISTINCT device FROM heimdall.samples WHERE dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND kind = 'tcp' AND target_id LIKE 'client/%' ORDER BY 1",
+        "refresh": 2,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "current": {}
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "type": "dashboards",
+      "tags": [
+        "heimdall"
+      ],
+      "asDropdown": false,
+      "title": "heimdall"
+    }
+  ],
+  "panels": [
+    {
+      "type": "row",
+      "title": "Connections of LAN clients (passive, every TCP and QUIC handshake)",
+      "collapsed": false,
+      "panels": [],
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "type": "table",
+      "title": "Clients over the range",
+      "description": "lan is the client's reply time to the server's SYN-ACK, measured at the CPE: the Wi-Fi or Ethernet round trip plus the client's own delay. wan is SYN to SYN-ACK. unanswered are SYNs the server never answered.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lan_p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lan_p90"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "wan_p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "unanswered"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "rssi"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dBm"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "WITH f AS ( SELECT ts_ms, CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, service, category, json_extract_scalar(extra, '$.client') AS client, coalesce(json_extract_scalar(extra, '$.node'), 'cpe') AS node, json_extract_scalar(extra, '$.medium') AS medium, json_extract_scalar(extra, '$.band') AS band, json_extract_scalar(extra, '$.proto') AS proto, CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan, CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan, CAST(json_extract_scalar(extra, '$.rssi') AS integer) AS rssi, status FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'flow' ) SELECT client, arbitrary(node) AS node, arbitrary(medium) AS medium, arbitrary(band) AS band, count(*) AS flows, approx_percentile(lan, 0.5) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan_p50, approx_percentile(lan, 0.9) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan_p90, approx_percentile(wan, 0.5) FILTER (WHERE status = 'ok') AS wan_p50, 100.0 * count_if(status = 'timeout') / count(*) AS unanswered, avg(rssi) AS rssi FROM f GROUP BY 1 ORDER BY flows DESC",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 24,
+        "h": 8
+      },
+      "id": 2
+    },
+    {
+      "type": "timeseries",
+      "title": "LAN round trip p50 by client (TCP)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0,
+          "displayName": "${__field.labels.metric}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "WITH f AS ( SELECT ts_ms, CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, service, category, json_extract_scalar(extra, '$.client') AS client, coalesce(json_extract_scalar(extra, '$.node'), 'cpe') AS node, json_extract_scalar(extra, '$.medium') AS medium, json_extract_scalar(extra, '$.band') AS band, json_extract_scalar(extra, '$.proto') AS proto, CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan, CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan, CAST(json_extract_scalar(extra, '$.rssi') AS integer) AS rssi, status FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'flow' ) SELECT time, client || ' ' || node AS metric, approx_percentile(lan, 0.5) AS value FROM f WHERE proto = 'tcp' AND status = 'ok' GROUP BY 1, 2 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 12,
+        "h": 9
+      },
+      "id": 3
+    },
+    {
+      "type": "timeseries",
+      "title": "WAN round trip p50 by client",
+      "description": "",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0,
+          "displayName": "${__field.labels.metric}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "WITH f AS ( SELECT ts_ms, CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, service, category, json_extract_scalar(extra, '$.client') AS client, coalesce(json_extract_scalar(extra, '$.node'), 'cpe') AS node, json_extract_scalar(extra, '$.medium') AS medium, json_extract_scalar(extra, '$.band') AS band, json_extract_scalar(extra, '$.proto') AS proto, CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan, CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan, CAST(json_extract_scalar(extra, '$.rssi') AS integer) AS rssi, status FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'flow' ) SELECT time, client || ' ' || node AS metric, approx_percentile(wan, 0.5) AS value FROM f WHERE status = 'ok' GROUP BY 1, 2 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 9,
+        "w": 12,
+        "h": 9
+      },
+      "id": 4
+    },
+    {
+      "type": "row",
+      "title": "One client: $client",
+      "collapsed": false,
+      "panels": [],
+      "id": 5,
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "LAN, WAN and LAN ping of $client",
+      "description": "The first echo of a burst waits for a client in power save to wake for a beacon; the rest show the awake round trip.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0,
+          "displayName": "${__field.labels.metric}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "WITH f AS ( SELECT ts_ms, CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, service, category, json_extract_scalar(extra, '$.client') AS client, coalesce(json_extract_scalar(extra, '$.node'), 'cpe') AS node, json_extract_scalar(extra, '$.medium') AS medium, json_extract_scalar(extra, '$.band') AS band, json_extract_scalar(extra, '$.proto') AS proto, CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan, CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan, CAST(json_extract_scalar(extra, '$.rssi') AS integer) AS rssi, status FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'flow' ) SELECT time, 'lan (tcp handshake)' AS metric, approx_percentile(lan, 0.5) AS value FROM f WHERE client = '$client' AND proto = 'tcp' AND status = 'ok' GROUP BY 1, 2 UNION ALL SELECT time, 'wan (tcp handshake)', approx_percentile(wan, 0.5) FROM f WHERE client = '$client' AND status = 'ok' GROUP BY 1, 2 UNION ALL SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp), 'lan ping (best of burst)', approx_percentile(rtt_ms, 0.5) FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'lan' AND status = 'ok' AND target_id = 'lan/$client' GROUP BY 1, 2 UNION ALL SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp), 'lan ping (first of burst)', approx_percentile(CAST(json_extract_scalar(extra, '$.burst_ms[0]') AS double), 0.5) FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'lan' AND target_id = 'lan/$client' GROUP BY 1, 2 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 19,
+        "w": 12,
+        "h": 9
+      },
+      "id": 6
+    },
+    {
+      "type": "table",
+      "title": "Services of $client",
+      "description": "",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "wan_p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "wan_p90"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lan_p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "WITH f AS ( SELECT ts_ms, CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, service, category, json_extract_scalar(extra, '$.client') AS client, coalesce(json_extract_scalar(extra, '$.node'), 'cpe') AS node, json_extract_scalar(extra, '$.medium') AS medium, json_extract_scalar(extra, '$.band') AS band, json_extract_scalar(extra, '$.proto') AS proto, CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan, CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan, CAST(json_extract_scalar(extra, '$.rssi') AS integer) AS rssi, status FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'flow' ) SELECT category, service, count(*) AS flows, approx_percentile(wan, 0.5) FILTER (WHERE status = 'ok') AS wan_p50, approx_percentile(wan, 0.9) FILTER (WHERE status = 'ok') AS wan_p90, approx_percentile(lan, 0.5) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan_p50, count_if(status = 'timeout') AS unanswered FROM f WHERE client = '$client' GROUP BY 1, 2 ORDER BY flows DESC",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 19,
+        "w": 12,
+        "h": 9
+      },
+      "id": 7
+    },
+    {
+      "type": "row",
+      "title": "Wi-Fi",
+      "collapsed": false,
+      "panels": [],
+      "id": 8,
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Signal (RSSI) by client",
+      "description": "Clients of the CPE come from wl; clients of mesh extenders from the EasyMesh topology.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dBm",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "displayName": "${__field.labels.metric}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, json_extract_scalar(extra, '$.client') || ' ' || json_extract_scalar(extra, '$.node') || ' ' || json_extract_scalar(extra, '$.band') AS metric, avg(CAST(json_extract_scalar(extra, '$.rssi') AS double)) AS value FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'wifi_sta' AND json_extract_scalar(extra, '$.rssi') IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 12,
+        "h": 9
+      },
+      "id": 9
+    },
+    {
+      "type": "timeseries",
+      "title": "Transmit retries to clients of the CPE",
+      "description": "",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0,
+          "displayName": "${__field.labels.metric}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, json_extract_scalar(extra, '$.client') AS metric, 100.0 * sum(CAST(json_extract_scalar(extra, '$.tx_retries') AS double)) / nullif(sum(CAST(json_extract_scalar(extra, '$.tx_sent') AS double)), 0) AS value FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'wifi_sta' AND json_extract_scalar(extra, '$.source') = 'wl' GROUP BY 1, 2 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 29,
+        "w": 12,
+        "h": 9
+      },
+      "id": 10
+    },
+    {
+      "type": "timeseries",
+      "title": "Radio airtime",
+      "description": "busy: channel busy; obss: neighbouring networks; inbss: this network's clients; tx: the CPE transmitting.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0,
+          "displayName": "${__field.labels.metric}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, json_extract_scalar(extra, '$.band') || ' ' || m.name AS metric, avg(m.v) AS value FROM heimdall.samples CROSS JOIN UNNEST( ARRAY['busy', 'obss', 'inbss', 'tx'], ARRAY[CAST(json_extract_scalar(extra, '$.chanim_busy') AS double), CAST(json_extract_scalar(extra, '$.chanim_obss') AS double), CAST(json_extract_scalar(extra, '$.chanim_inbss') AS double), CAST(json_extract_scalar(extra, '$.chanim_tx') AS double)]) AS m(name, v) WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'wifi_radio' GROUP BY 1, 2 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 38,
+        "w": 12,
+        "h": 9
+      },
+      "id": 11
+    },
+    {
+      "type": "timeseries",
+      "title": "PHY rate to clients",
+      "description": "",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Mbits",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0,
+          "displayName": "${__field.labels.metric}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, json_extract_scalar(extra, '$.client') || ' ' || json_extract_scalar(extra, '$.node') AS metric, avg(CAST(json_extract_scalar(extra, '$.tx_rate_mbps') AS double)) AS value FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'wifi_sta' GROUP BY 1, 2 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 38,
+        "w": 12,
+        "h": 9
+      },
+      "id": 12
+    },
+    {
+      "type": "table",
+      "title": "Wi-Fi events",
+      "description": "",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "SELECT CAST(from_unixtime(ts_ms / 1000.0) AS timestamp) AS time, json_extract_scalar(extra, '$.event') AS event, json_extract_scalar(extra, '$.client') AS client, json_extract_scalar(extra, '$.node') AS node, json_extract_scalar(extra, '$.band') AS band, coalesce(json_extract_scalar(extra, '$.from'), json_extract_scalar(extra, '$.prev_chanspec')) AS before, json_extract_scalar(extra, '$.chanspec') AS chanspec FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'event' AND json_extract_scalar(extra, '$.event') LIKE 'wifi\\_%' ESCAPE '\\' ORDER BY ts_ms DESC LIMIT 200",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 47,
+        "w": 24,
+        "h": 8
+      },
+      "id": 13
+    },
+    {
+      "type": "row",
+      "title": "Cross-check with a client device ($clientdev)",
+      "collapsed": false,
+      "panels": [],
+      "id": 14,
+      "gridPos": {
+        "x": 0,
+        "y": 55,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Connect time: client vs CPE split",
+      "description": "The client device's TCP connects and the CPE's record of the same connections.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0,
+          "displayName": "${__field.labels.metric}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "WITH c AS ( SELECT ts_ms, service, dst_ip, rtt_ms AS client_ms, json_extract_scalar(extra, '$.local_ip') AS ip, CAST(json_extract_scalar(extra, '$.local_port') AS integer) AS port FROM heimdall.samples WHERE device = '$clientdev' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'tcp' AND target_id LIKE 'client/%' AND status = 'ok' AND target_id <> 'client/gateway-tcp' ), f AS ( SELECT ts_ms, dst_ip, json_extract_scalar(extra, '$.client_ip') AS ip, CAST(json_extract_scalar(extra, '$.client_port') AS integer) AS port, CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan, CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'flow' AND status = 'ok' AND json_extract_scalar(extra, '$.proto') = 'tcp' ), m AS ( SELECT c.ts_ms, c.service, c.client_ms, f.wan, f.lan FROM c JOIN f ON c.ip = f.ip AND c.port = f.port AND c.dst_ip = f.dst_ip AND abs(c.ts_ms - f.ts_ms) < 5000 ) SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, 'client connect' AS metric, approx_percentile(client_ms, 0.5) AS value FROM m GROUP BY 1, 2 UNION ALL SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp), 'cpe wan + lan', approx_percentile(wan + lan, 0.5) FROM m GROUP BY 1, 2 UNION ALL SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp), 'cpe wan', approx_percentile(wan, 0.5) FROM m GROUP BY 1, 2 UNION ALL SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp), 'cpe lan', approx_percentile(lan, 0.5) FROM m GROUP BY 1, 2 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 56,
+        "w": 12,
+        "h": 9
+      },
+      "id": 15
+    },
+    {
+      "type": "table",
+      "title": "Client vs CPE by service",
+      "description": "gap is what the client sees beyond the CPE's split: its own network stack and the parts of the LAN path the handshake does not cover.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "client_p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cpe_wan_p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cpe_lan_p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "gap_p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "WITH c AS ( SELECT ts_ms, service, dst_ip, rtt_ms AS client_ms, json_extract_scalar(extra, '$.local_ip') AS ip, CAST(json_extract_scalar(extra, '$.local_port') AS integer) AS port FROM heimdall.samples WHERE device = '$clientdev' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'tcp' AND target_id LIKE 'client/%' AND status = 'ok' AND target_id <> 'client/gateway-tcp' ), f AS ( SELECT ts_ms, dst_ip, json_extract_scalar(extra, '$.client_ip') AS ip, CAST(json_extract_scalar(extra, '$.client_port') AS integer) AS port, CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan, CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'flow' AND status = 'ok' AND json_extract_scalar(extra, '$.proto') = 'tcp' ), m AS ( SELECT c.ts_ms, c.service, c.client_ms, f.wan, f.lan FROM c JOIN f ON c.ip = f.ip AND c.port = f.port AND c.dst_ip = f.dst_ip AND abs(c.ts_ms - f.ts_ms) < 5000 ) SELECT service, count(*) AS matched, approx_percentile(client_ms, 0.5) AS client_p50, approx_percentile(wan, 0.5) AS cpe_wan_p50, approx_percentile(lan, 0.5) AS cpe_lan_p50, approx_percentile(client_ms - wan - lan, 0.5) AS gap_p50 FROM m GROUP BY 1 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 56,
+        "w": 12,
+        "h": 9
+      },
+      "id": 16
+    },
+    {
+      "type": "timeseries",
+      "title": "Client to CPE: client's view vs CPE's view",
+      "description": "",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0,
+          "displayName": "${__field.labels.metric}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, 'client icmp to cpe' AS metric, approx_percentile(rtt_ms, 0.5) AS value FROM heimdall.samples WHERE device = '$clientdev' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND target_id = 'client/gateway' AND status = 'ok' GROUP BY 1, 2 UNION ALL SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp), 'client tcp to cpe', approx_percentile(rtt_ms, 0.5) FROM heimdall.samples WHERE device = '$clientdev' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND target_id = 'client/gateway-tcp' AND status = 'ok' GROUP BY 1, 2 UNION ALL SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp), 'cpe lan (handshakes of client)', approx_percentile(lan, 0.5) FROM ( WITH c AS ( SELECT ts_ms, service, dst_ip, rtt_ms AS client_ms, json_extract_scalar(extra, '$.local_ip') AS ip, CAST(json_extract_scalar(extra, '$.local_port') AS integer) AS port FROM heimdall.samples WHERE device = '$clientdev' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'tcp' AND target_id LIKE 'client/%' AND status = 'ok' AND target_id <> 'client/gateway-tcp' ), f AS ( SELECT ts_ms, dst_ip, json_extract_scalar(extra, '$.client_ip') AS ip, CAST(json_extract_scalar(extra, '$.client_port') AS integer) AS port, CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan, CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'flow' AND status = 'ok' AND json_extract_scalar(extra, '$.proto') = 'tcp' ), m AS ( SELECT c.ts_ms, c.service, c.client_ms, f.wan, f.lan FROM c JOIN f ON c.ip = f.ip AND c.port = f.port AND c.dst_ip = f.dst_ip AND abs(c.ts_ms - f.ts_ms) < 5000 ) SELECT ts_ms, lan FROM m) GROUP BY 1, 2 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 65,
+        "w": 12,
+        "h": 9
+      },
+      "id": 17
+    },
+    {
+      "type": "timeseries",
+      "title": "Client's own Wi-Fi reading",
+      "description": "",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dBm",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "displayName": "${__field.labels.metric}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "SELECT CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0) AS timestamp) AS time, m.name AS metric, avg(m.v) AS value FROM heimdall.samples CROSS JOIN UNNEST( ARRAY['rssi', 'noise'], ARRAY[CAST(json_extract_scalar(extra, '$.rssi') AS double), CAST(json_extract_scalar(extra, '$.noise') AS double)]) AS m(name, v) WHERE device = '$clientdev' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'wifi_sta' AND target_id = 'client/wifi' GROUP BY 1, 2 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 65,
+        "w": 12,
+        "h": 9
+      },
+      "id": 18
+    }
+  ]
+}

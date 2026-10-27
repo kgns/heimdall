@@ -215,3 +215,51 @@ def test_atlas_ping_and_context():
         "peer_busy_inflation": 1.25,
     }
     assert ctx["f-root"]["peer_probes"] == 0 and len(ctx["ioda_events"]) == 1
+
+
+def test_daily_client_and_findings():
+    client_rows = [
+        {
+            "device": "home", "client": "aaa", "node": "WX5600", "medium": "wifi", "band": "5GHz",
+            "flows": "120", "unanswered": "3", "lan_p50": "4.0", "lan_p90": "45.0", "lan_busy_p50": "6",
+            "lan_night_p50": "3", "wan_p50": "40", "wan_p90": "60", "rssi_avg": "-78.5", "rssi_min": "-84",
+            "snr_avg": "12", "retry_pct": "25", "tx_rate_p50": "300", "ps_share": "0.4", "ping_p50": "3",
+            "ping_p95": "20", "ping_first_p50": "30", "ping_loss_pct": "1", "roams": "12", "leaves": "1",
+        },
+        {
+            "device": "home", "client": "bbb", "node": "cpe", "medium": "wired", "band": None,
+            "flows": "300", "unanswered": "0", "lan_p50": "1.5", "lan_p90": "2.0", "lan_busy_p50": None,
+            "lan_night_p50": None, "wan_p50": "40", "wan_p90": "50", "rssi_avg": None, "rssi_min": None,
+            "snr_avg": None, "retry_pct": None, "tx_rate_p50": None, "ps_share": None, "ping_p50": "0.4",
+            "ping_p95": "1", "ping_first_p50": "0.5", "ping_loss_pct": "0", "roams": None, "leaves": None,
+        },
+    ]  # fmt: skip
+    clients = analytics.daily_client(FakeAthena({"wifi_roam": client_rows}), DAY)
+    assert clients[0]["rssi_avg"] == -78.5 and clients[1]["roams"] == 0 and clients[1]["band"] is None
+
+    svc_rows = [
+        {"device": "home", "client": "aaa", "service": "netflix", "category": "streaming", "flows": "10",
+         "wan_p50": "80", "cpe_tcp_p50": "40"},
+        {"device": "home", "client": "bbb", "service": "netflix", "category": "streaming", "flows": "10",
+         "wan_p50": "41", "cpe_tcp_p50": "40"},
+    ]  # fmt: skip
+    svc = analytics.client_services(FakeAthena({"cpe_tcp_p50": svc_rows}), DAY)
+    assert svc[0]["ratio"] == 2.0
+
+    found = analytics.client_findings(clients, svc)
+    assert [f["client"] for f in found] == ["bbb", "aaa"]
+    assert found[0]["flags"] == []
+    assert found[1]["flags"] == ["weak_signal", "slow_lan", "many_retries", "roaming", "wan_slower_than_cpe_probe"]
+    assert found[1]["wan_vs_cpe_probe"] == 2.0 and "band" not in found[0]
+
+    cross_rows = [
+        {"device": "home", "client_device": "mbp", "client": "aaa", "service": "google", "matched": "30",
+         "client_p50": "18", "cpe_wan_p50": "12", "cpe_lan_p50": "3", "gap_p50": "3", "gap_p90": "5"},
+    ]  # fmt: skip
+    cross = analytics.client_crosscheck(FakeAthena({"client_device": cross_rows}), DAY)
+    s = analytics.summarize(DAY, [{"device": "home", "kind": "icmp", "category": "x", "service": "y",
+                                   "busy_inflation": None, "loss_pct": 0}], [], [], [], {}, "aws-euc1",
+                            clients, svc, cross)  # fmt: skip
+    dev = s["devices"]["home"]
+    assert [c["client"] for c in dev["lan_clients"]] == ["bbb", "aaa"]
+    assert dev["client_crosscheck"][0]["gap_p50"] == 3.0 and "device" not in dev["client_crosscheck"][0]
