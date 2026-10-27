@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 from datetime import date
 
 import boto3
@@ -7,7 +8,7 @@ import pytest
 from moto import mock_aws
 
 from heimdall_cloud.analytics import Store
-from heimdall_cloud.report import Reporter, build_prompt, fallback_report, headline
+from heimdall_cloud.report import BedrockWriter, KiroWriter, Reporter, build_prompt, fallback_report, headline
 
 DAY = date(2026, 10, 27)
 os.environ.setdefault("AWS_DEFAULT_REGION", "eu-central-1")
@@ -62,17 +63,15 @@ def store():
         yield st
 
 
-def test_report_with_model(store):
+def test_report_with_bedrock(store):
     bedrock, posts = FakeBedrock(), []
     r = Reporter(
         store,
-        bedrock,
-        "eu.anthropic.claude-sonnet-5-5",
+        BedrockWriter(bedrock, "eu.anthropic.claude-sonnet-5-5"),
         FakeWebhook("https://hooks.slack.com/x"),
         post=lambda url, text: posts.append(text),
     )
-    out = r(DAY)
-    rep = out["reports"]["ex7501-home"]
+    rep = r(DAY)["reports"]["ex7501-home"]
     assert rep == {"key": "derived/report/dt=2026-10-27/ex7501-home.md", "model": True, "posted": True, "chars": 19}
     body = store.s3.get_object(Bucket="heimdall-test", Key=rep["key"])["Body"].read().decode()
     assert body == "# Report\nAll fine.\n" and posts == [body]
@@ -82,8 +81,46 @@ def test_report_with_model(store):
     assert '"trend"' in prompt and "2026-10-26" in prompt and "TATA" in prompt
 
 
+def test_kiro_writer():
+    calls = []
+
+    def run(args, **kw):
+        calls.append((args, kw))
+        return subprocess.CompletedProcess(args, 0, stdout="\x1b[0m# heimdall daily report\nAll fine.\n", stderr="")
+
+    w = KiroWriter("/opt/kiro/bin/kiro-cli", lambda: "key-1", "claude-sonnet-5.5", run=run)
+    assert w("PROMPT") == "# heimdall daily report\nAll fine."
+    [(args, kw)] = calls
+    assert args[:6] == [
+        "/opt/kiro/bin/kiro-cli",
+        "chat",
+        "--no-interactive",
+        "--trust-tools=",
+        "--model",
+        "claude-sonnet-5.5",
+    ]
+    assert "PROMPT" in args[6] and "network performance analyst" in args[6]
+    assert kw["env"]["KIRO_API_KEY"] == "key-1" and os.path.basename(kw["env"]["HOME"]).startswith("kiro-home-")
+    assert kw["env"]["PATH"].startswith("/opt/kiro/bin:")
+    assert not os.path.exists(kw["env"]["HOME"]) and not os.path.exists(kw["cwd"])
+
+    login = KiroWriter(
+        "kiro-cli",
+        lambda: "bad",
+        "m",
+        run=lambda a, **k: subprocess.CompletedProcess(
+            a, 0, stdout="Confirm the following code in the browser\nCode: XXXX", stderr=""
+        ),
+    )
+    with pytest.raises(RuntimeError):
+        login("PROMPT")
+    failed = KiroWriter("kiro-cli", lambda: "k", "m", run=lambda a, **k: subprocess.CompletedProcess(a, 1, "", "boom"))
+    with pytest.raises(RuntimeError, match="boom"):
+        failed("PROMPT")
+
+
 def test_report_falls_back_without_model(store):
-    r = Reporter(store, FakeBedrock(fail=True), "m", FakeWebhook(None))
+    r = Reporter(store, BedrockWriter(FakeBedrock(fail=True), "m"), FakeWebhook(None))
     rep = r(DAY)["reports"]["ex7501-home"]
     assert rep["model"] is False and rep["posted"] is False
     body = store.s3.get_object(Bucket="heimdall-test", Key=rep["key"])["Body"].read().decode()
@@ -92,7 +129,7 @@ def test_report_falls_back_without_model(store):
 
 def test_missing_summary(store):
     with pytest.raises(RuntimeError):
-        Reporter(store, FakeBedrock(), "m", None)(date(2026, 1, 1))
+        Reporter(store, BedrockWriter(FakeBedrock(), "m"), None)(date(2026, 1, 1))
 
 
 def test_headline_and_prompt():

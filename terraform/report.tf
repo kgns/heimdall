@@ -1,17 +1,65 @@
-# Daily written report (cloud/src/heimdall_cloud/report.py): Claude on
-# Amazon Bedrock reads the day's analysis summary and writes a short
-# report, stored at derived/report/dt=<day>/<device>.md and posted to
-# Slack. The analytics Lambda starts it after each run.
+# Daily written report (cloud/src/heimdall_cloud/report.py). A language
+# model reads the day's analysis summary and writes a short report, stored
+# at derived/report/dt=<day>/<device>.md and posted to Slack. The analytics
+# Lambda starts it after each run.
+#
+# The default writer is Kiro CLI in headless mode, authenticated with the
+# API key in SSM /heimdall/kiro/api_key. The Lambda is a container image
+# because it carries the Kiro CLI binaries. With report_writer = "bedrock" a
+# Bedrock model or inference profile is called instead.
+
+variable "report_writer" {
+  description = "kiro (Kiro CLI headless) or bedrock."
+  type        = string
+  default     = "kiro"
+  validation {
+    condition     = contains(["kiro", "bedrock"], var.report_writer)
+    error_message = "report_writer must be kiro or bedrock."
+  }
+}
 
 variable "report_model" {
-  description = "Bedrock model or inference profile ID for the daily report."
+  description = "Kiro model name (kiro-cli chat --list-models) or Bedrock model / inference profile ID."
   type        = string
-  default     = "eu.anthropic.claude-sonnet-5-5"
+  default     = "claude-sonnet-5.5"
 }
 
 locals {
-  # The EU inference profile routes to the model in any EU region.
-  report_foundation_model = trimprefix(var.report_model, "eu.")
+  kiro_key_parameter = "/heimdall/kiro/api_key"
+  report_sources = concat(
+    ["${path.module}/../cloud/report.Dockerfile"],
+    [for f in sort(fileset("${path.module}/../cloud/src/heimdall_cloud", "*.py")) : "${path.module}/../cloud/src/heimdall_cloud/${f}"],
+  )
+  report_image_tag = substr(sha256(join("\n", [for f in local.report_sources : "${f}:${filesha256(f)}"])), 0, 16)
+}
+
+resource "aws_ecr_repository" "report" {
+  name                 = "heimdall-report"
+  image_tag_mutability = "IMMUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "report" {
+  repository = aws_ecr_repository.report.name
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "keep the last 3 images"
+      selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 3 }
+      action       = { type = "expire" }
+    }]
+  })
+}
+
+resource "terraform_data" "report_image" {
+  triggers_replace = [aws_ecr_repository.report.repository_url, local.report_image_tag]
+
+  provisioner "local-exec" {
+    command = "${path.module}/../scripts/push-image ${aws_ecr_repository.report.repository_url} ${local.report_image_tag} ${path.module}/../cloud ${path.module}/../cloud/report.Dockerfile"
+  }
 }
 
 resource "aws_cloudwatch_log_group" "report" {
@@ -30,13 +78,16 @@ data "aws_iam_policy_document" "report" {
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
     resources = ["${aws_cloudwatch_log_group.report.arn}:*"]
   }
-  statement {
-    sid     = "Model"
-    actions = ["bedrock:InvokeModel"]
-    resources = [
-      "arn:aws:bedrock:${var.aws_region}:${var.aws_account_id}:inference-profile/${var.report_model}",
-      "arn:aws:bedrock:*::foundation-model/${local.report_foundation_model}",
-    ]
+  dynamic "statement" {
+    for_each = var.report_writer == "bedrock" ? [1] : []
+    content {
+      sid     = "Model"
+      actions = ["bedrock:InvokeModel"]
+      resources = [
+        "arn:aws:bedrock:${var.aws_region}:${var.aws_account_id}:inference-profile/${var.report_model}",
+        "arn:aws:bedrock:*::foundation-model/${replace(var.report_model, "/^(eu|global)\\./", "")}",
+      ]
+    }
   }
   statement {
     sid       = "ReadSummaries"
@@ -59,12 +110,15 @@ data "aws_iam_policy_document" "report" {
     resources = ["${aws_s3_bucket.raw.arn}/derived/report/*"]
   }
   statement {
-    sid       = "Webhook"
-    actions   = ["ssm:GetParameter"]
-    resources = ["arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter${local.slack_webhook_parameter}"]
+    sid     = "Secrets"
+    actions = ["ssm:GetParameter"]
+    resources = [
+      "arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter${local.slack_webhook_parameter}",
+      "arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter${local.kiro_key_parameter}",
+    ]
   }
   statement {
-    sid       = "DecryptWebhook"
+    sid       = "DecryptSecrets"
     actions   = ["kms:Decrypt"]
     resources = ["arn:aws:kms:${var.aws_region}:${var.aws_account_id}:key/*"]
     condition {
@@ -82,21 +136,26 @@ resource "aws_iam_role_policy" "report" {
 }
 
 resource "aws_lambda_function" "report" {
-  function_name    = "heimdall-report"
-  role             = aws_iam_role.report.arn
-  runtime          = "python3.13"
-  architectures    = ["arm64"]
-  handler          = "heimdall_cloud.report.lambda_handler"
-  filename         = data.archive_file.ingest.output_path
-  source_code_hash = data.archive_file.ingest.output_base64sha256
-  memory_size      = 256
-  timeout          = 180
+  function_name = "heimdall-report"
+  role          = aws_iam_role.report.arn
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.report.repository_url}:${local.report_image_tag}"
+  architectures = ["arm64"]
+  # Kiro CLI is a large binary; it needs the memory and room in /tmp.
+  memory_size = 1024
+  timeout     = 300
+
+  ephemeral_storage {
+    size = 1024
+  }
 
   environment {
     variables = {
-      BUCKET            = aws_s3_bucket.raw.bucket
-      MODEL_ID          = var.report_model
-      WEBHOOK_PARAMETER = local.slack_webhook_parameter
+      BUCKET             = aws_s3_bucket.raw.bucket
+      WRITER             = var.report_writer
+      MODEL_ID           = var.report_model
+      KIRO_KEY_PARAMETER = local.kiro_key_parameter
+      WEBHOOK_PARAMETER  = local.slack_webhook_parameter
     }
   }
 
@@ -105,7 +164,7 @@ resource "aws_lambda_function" "report" {
     log_group  = aws_cloudwatch_log_group.report.name
   }
 
-  depends_on = [aws_iam_role_policy.report]
+  depends_on = [aws_iam_role_policy.report, terraform_data.report_image]
 }
 
 resource "aws_lambda_function_event_invoke_config" "report" {

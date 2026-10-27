@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Grafana with the Athena data source, provisioning and dashboards built in.
 # Built for linux/arm64 by terraform (terraform/grafana.tf) through
-# scripts/grafana-image. The plugin is fetched on the build platform so the
+# scripts/push-image. The plugin is fetched on the build platform so the
 # image builds on amd64 without emulation.
 ARG GRAFANA_IMAGE=grafana/grafana:13.2.4@sha256:dbbc38ea21103cefb50396340cd88afec779c7e070b0a7bf5a75b4ce46651d3f
 

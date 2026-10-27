@@ -126,7 +126,7 @@ python3 grafana/gen_dashboards.py    # rewrites grafana/dashboards/*.json
 ```
 
 Commit the JSON with the generator. `terraform apply` rebuilds and pushes
-the image (`scripts/grafana-image`, needs Docker with buildx) whenever a
+the image (`scripts/push-image`, needs Docker with buildx) whenever a
 file under `grafana/` changes, and the service then rolls to the new task.
 Grafana keeps no state between tasks: users, preferences and edits made in
 the UI are lost on every deploy, so change dashboards in the generator.
@@ -235,12 +235,18 @@ terraform apply -var 'analytics_backfill=["2026-10-26"]'
 ## Daily report
 
 After each daily analysis, `heimdall-report` (`terraform/report.tf`) runs.
-It gives the day's summary, with the previous six days as a trend, to
-Claude on Amazon Bedrock (`var.report_model`, by default the EU inference
-profile of Claude Sonnet 5.5). The written report is stored as
-`derived/report/dt=<day>/<device>.md` and posted to Slack. If the model
-cannot be called, a plain report from the same numbers is stored and posted
-instead.
+It gives the day's summary, with the previous six days as a trend, to a
+language model. The default is Kiro CLI in headless mode (`kiro-cli chat
+--no-interactive`, no tools trusted), which uses the API key stored in SSM
+under `/heimdall/kiro/api_key` and the model in `var.report_model`
+(`claude-sonnet-5.5`). The Lambda is a container image
+(`cloud/report.Dockerfile`, ECR `heimdall-report`) because it carries the
+Kiro CLI binaries. Setting `report_writer = "bedrock"` with a Bedrock model
+ID calls Bedrock instead.
+
+The report is stored as `derived/report/dt=<day>/<device>.md` and posted
+to Slack. If the model cannot be reached, a plain report built from the
+same numbers is stored and posted instead.
 
 ```sh
 scripts/report ex7501-home 2026-10-26

@@ -65,7 +65,7 @@ resource "terraform_data" "grafana_image" {
   triggers_replace = [aws_ecr_repository.grafana.repository_url, local.grafana_image_tag]
 
   provisioner "local-exec" {
-    command = "${path.module}/../scripts/grafana-image ${aws_ecr_repository.grafana.repository_url} ${local.grafana_image_tag}"
+    command = "${path.module}/../scripts/push-image ${aws_ecr_repository.grafana.repository_url} ${local.grafana_image_tag} ${local.grafana_dir}"
   }
 }
 

@@ -1,10 +1,11 @@
 """Daily report: turns the analysis summary of a day into a short written
-report with Claude on Amazon Bedrock, stores it next to the summary and
-posts it to Slack when a webhook is configured.
+report with a language model (Kiro CLI in headless mode, or a model on
+Amazon Bedrock), stores it next to the summary and posts it to Slack when a
+webhook is configured.
 
 Invoked by the analytics Lambda after it wrote the day's summary, with
-``{"date": "YYYY-MM-DD"}``. If Bedrock is unavailable, a plain report built
-from the same numbers is stored and posted instead, marked as such.
+``{"date": "YYYY-MM-DD"}``. If the model cannot be reached, a plain report
+built from the same numbers is stored and posted instead, marked as such.
 """
 
 from __future__ import annotations
@@ -12,6 +13,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import shutil
+import subprocess
+import tempfile
+from collections.abc import Callable
 from datetime import date, timedelta
 from typing import Any
 
@@ -99,9 +105,74 @@ def fallback_report(summary: dict[str, Any], device: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+class BedrockWriter:
+    """Writes the report with a model on Amazon Bedrock."""
+
+    def __init__(self, client: Any, model_id: str):
+        self.client, self.model_id = client, model_id
+
+    def __call__(self, prompt: str) -> str:
+        resp = self.client.converse(
+            modelId=self.model_id,
+            system=[{"text": SYSTEM}],
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={"maxTokens": 1500, "temperature": 0.2},
+        )
+        log.info(json.dumps({"writer": "bedrock", "model": self.model_id, "usage": resp.get("usage", {})}))
+        return "".join(c.get("text", "") for c in resp["output"]["message"]["content"])
+
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+class KiroWriter:
+    """Writes the report with Kiro CLI in headless mode: KIRO_API_KEY
+    authenticates, --no-interactive prints the answer and exits, and no tool
+    is trusted, so the agent can only answer."""
+
+    def __init__(
+        self,
+        binary: str,
+        api_key: Callable[[], str],
+        model: str,
+        timeout: float = 240,
+        run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    ):
+        self.binary, self.api_key, self.model, self.timeout, self.run = binary, api_key, model, timeout, run
+
+    def __call__(self, prompt: str) -> str:
+        # Lambda's only writable path is /tmp; Kiro keeps its state in HOME.
+        home = tempfile.mkdtemp(prefix="kiro-home-")
+        work = tempfile.mkdtemp(prefix="kiro-work-")
+        # kiro-cli starts kiro-cli-chat from PATH.
+        path = f"{os.path.dirname(self.binary)}:/usr/bin:/bin" if os.path.dirname(self.binary) else "/usr/bin:/bin"
+        env = {"KIRO_API_KEY": self.api_key(), "HOME": home, "PATH": path, "TERM": "dumb", "NO_COLOR": "1"}
+        args = [
+            self.binary,
+            "chat",
+            "--no-interactive",
+            "--trust-tools=",
+            "--model",
+            self.model,
+            f"{SYSTEM}\n\n{prompt}\n\nReply with the report only. Do not use any tools.",
+        ]
+        try:
+            p = self.run(args, env=env, cwd=work, capture_output=True, text=True, timeout=self.timeout, check=False)
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+            shutil.rmtree(work, ignore_errors=True)
+        out = ANSI_RE.sub("", p.stdout or "").strip()
+        # Without a working key Kiro falls back to a browser login and waits.
+        if p.returncode != 0 or not out or "Confirm the following code in the browser" in out:
+            detail = ANSI_RE.sub("", (p.stderr or "") + out)[-300:]
+            raise RuntimeError(f"kiro-cli exited {p.returncode}: {detail}")
+        log.info(json.dumps({"writer": "kiro", "model": self.model, "chars": len(out)}))
+        return out
+
+
 class Reporter:
-    def __init__(self, store: Store, bedrock: Any, model_id: str, webhook: Webhook | None, post=post_slack):
-        self.store, self.bedrock, self.model_id, self.webhook, self.post = store, bedrock, model_id, webhook, post
+    def __init__(self, store: Store, writer: Callable[[str], str], webhook: Webhook | None, post=post_slack):
+        self.store, self.writer, self.webhook, self.post = store, writer, webhook, post
 
     def summary(self, day: date) -> dict[str, Any] | None:
         try:
@@ -112,18 +183,9 @@ class Reporter:
 
     def write(self, summary: dict[str, Any], device: str, trend: list[dict[str, Any]]) -> tuple[str, bool]:
         try:
-            resp = self.bedrock.converse(
-                modelId=self.model_id,
-                system=[{"text": SYSTEM}],
-                messages=[{"role": "user", "content": [{"text": build_prompt(summary, device, trend)}]}],
-                inferenceConfig={"maxTokens": 1500, "temperature": 0.2},
-            )
-            text = "".join(c.get("text", "") for c in resp["output"]["message"]["content"])
-            usage = resp.get("usage", {})
-            log.info(json.dumps({"device": device, "model": self.model_id, "usage": usage}))
-            return text.strip() + "\n", True
+            return self.writer(build_prompt(summary, device, trend)).strip() + "\n", True
         except Exception as e:  # the plain report is better than none
-            log.error("bedrock: %s", e)
+            log.error("report writer: %s", e)
             return fallback_report(summary, device), False
 
     def __call__(self, day: date) -> dict[str, Any]:
@@ -157,10 +219,21 @@ class Reporter:
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     import boto3
 
+    ssm = boto3.client("ssm")
+    if os.environ.get("WRITER", "kiro") == "kiro":
+        name = os.environ["KIRO_KEY_PARAMETER"]
+
+        def api_key() -> str:
+            return ssm.get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"].strip()
+
+        writer: Callable[[str], str] = KiroWriter(
+            os.environ.get("KIRO_BIN", "kiro-cli"), api_key, os.environ["MODEL_ID"]
+        )
+    else:
+        writer = BedrockWriter(boto3.client("bedrock-runtime"), os.environ["MODEL_ID"])
     reporter = Reporter(
         store=Store(boto3.client("s3"), os.environ["BUCKET"]),
-        bedrock=boto3.client("bedrock-runtime"),
-        model_id=os.environ["MODEL_ID"],
-        webhook=Webhook(boto3.client("ssm"), os.environ["WEBHOOK_PARAMETER"]),
+        writer=writer,
+        webhook=Webhook(ssm, os.environ["WEBHOOK_PARAMETER"]),
     )
     return reporter(date.fromisoformat(event["date"]))
