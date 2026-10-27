@@ -50,6 +50,10 @@ type Collector struct {
 	prevRadio map[string]map[string]uint64
 	chanspec  map[string]string
 	where     map[string]location
+	// radioBusy is each radio's channel busy share from the last poll.
+	radioBusy map[string]int64
+	// lastRoam is when each client last moved between nodes or radios.
+	lastRoam map[string]int64
 
 	mu      sync.Mutex
 	context map[string]map[string]any
@@ -78,6 +82,7 @@ func New(opt Options) *Collector {
 	return &Collector{
 		opt: opt, prevSta: map[string]StaInfo{}, prevRadio: map[string]map[string]uint64{},
 		chanspec: map[string]string{}, where: map[string]location{}, context: map[string]map[string]any{},
+		radioBusy: map[string]int64{}, lastRoam: map[string]int64{},
 	}
 }
 
@@ -230,9 +235,16 @@ func (c *Collector) Poll(ctx context.Context) {
 			c.opt.Emit(sample.Sample{TS: ts, Kind: sample.KindWiFiSta, Category: "home", Service: "wifi",
 				TargetID: "wifi/" + id, Status: sample.StatusOK, Extra: x})
 			now2[id] = location{node: cpeNode, iface: iface, band: band}
-			cx := map[string]any{"node": cpeNode, "medium": "wifi", "wifi_iface": iface, "band": band, "ps": st.PowerSave}
+			cx := map[string]any{"node": cpeNode, "medium": "wifi", "wifi_iface": iface, "band": band, "ps": st.PowerSave,
+				"tx_rate_mbps": x["tx_rate_mbps"]}
 			if st.HasRSSI {
 				cx["rssi"] = st.RSSI
+			}
+			if v, ok := x["retry_pct"]; ok {
+				cx["retry_pct"] = v
+			}
+			if v, ok := c.radioBusy[radio]; ok {
+				cx["radio_busy"] = v
 			}
 			ctxNew[id] = cx
 		}
@@ -254,6 +266,15 @@ func (c *Collector) Poll(ctx context.Context) {
 
 	meshOK := c.pollMesh(ts, now2, ctxNew)
 	c.events(ts, now2, meshOK)
+	for id, t := range c.lastRoam {
+		if ts-t > int64(time.Hour/time.Millisecond) {
+			delete(c.lastRoam, id)
+			continue
+		}
+		if cx := ctxNew[id]; cx != nil {
+			cx["last_roam_ms"] = t
+		}
+	}
 
 	c.mu.Lock()
 	c.context = ctxNew
@@ -278,6 +299,9 @@ func (c *Collector) pollRadio(ctx context.Context, ts int64, iface string, st St
 				if v, ok := ch.Values[f]; ok {
 					x["chanim_"+f] = v
 				}
+			}
+			if v, ok := ch.Values["busy"]; ok {
+				c.radioBusy[iface] = v
 			}
 			if prev, ok := c.chanspec[iface]; ok && prev != ch.Chanspec {
 				c.opt.Emit(sample.Sample{TS: ts, Kind: sample.KindEvent, Category: "home", Service: "wifi",
@@ -349,7 +373,7 @@ func (c *Collector) pollMesh(ts int64, where map[string]location, ctxNew map[str
 		}
 		cx["band"] = cl.Band
 		if cl.HasRadio {
-			cx["rssi"] = cl.RSSI
+			cx["rssi"], cx["tx_rate_mbps"] = cl.RSSI, cl.RateMbps
 		}
 		ctxNew[id] = cx
 		where[id] = location{node: name, band: cl.Band}
@@ -383,6 +407,7 @@ func (c *Collector) events(ts int64, now map[string]location, meshOK bool) {
 		case prev != loc:
 			emit(id, "wifi_roam", map[string]any{"node": loc.node, "iface": loc.iface, "band": loc.band,
 				"from": prev.String(), "from_band": prev.band})
+			c.lastRoam[id] = ts
 		}
 	}
 	for id, prev := range c.where {

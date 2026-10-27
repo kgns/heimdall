@@ -279,6 +279,9 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		}
 	}
 	coll := newCollectors(e, h.FS, nw, h.Lookup, leaseFile)
+	if det != nil {
+		det.SetClientContext(coll.clientContext)
+	}
 	if cfg.Collectors.LAN.Enabled {
 		coll.discoverLAN()
 	}

@@ -34,7 +34,36 @@ CAUSES = {
     "destination_change": "DNS moved the service to another server shortly before",
     "dns_latency": "DNS resolution slowed down",
     "tls_blocked": "TLS handshakes fail after TCP connects (SNI filtering?)",
+    "roaming": "the client moved between radios or mesh nodes",
+    "weak_signal": "weak Wi-Fi signal at the CPE",
+    "retransmissions": "many Wi-Fi retransmissions to the client",
+    "channel_busy": "the Wi-Fi channel is busy (neighbouring networks or heavy use)",
+    "extender": "the client is behind a mesh extender (its radio or backhaul)",
+    "weak_link_extender": "low link rate between the client and its mesh extender",
+    "wired_lan": "wired LAN (cable, switch or the client itself)",
+    "lan_latency": "the client's LAN path; the CPE's Wi-Fi readings show nothing unusual",
+    "lan_wide": "several clients at once: the CPE or the whole home network",
 }
+
+# Scopes about the home network rather than the internet.
+HOME_SCOPES = ("client", "home")
+
+
+def _client_line(client: str, cx: dict[str, Any]) -> str:
+    parts = [str(cx.get("node") or "?")]
+    for key, fmt in (
+        ("band", "{}"),
+        ("rssi", "{} dBm"),
+        ("retry_pct", "{}% retries"),
+        ("radio_busy", "radio {}% busy"),
+    ):
+        if cx.get(key) is not None:
+            parts.append(fmt.format(cx[key]))
+    if cx.get("tx_rate_mbps") is not None:
+        parts.append(f"{float(cx['tx_rate_mbps']):.0f} Mbit/s")
+    if cx.get("backhaul"):
+        parts.append(f"backhaul {cx['backhaul']}")
+    return f"- client {client}: " + ", ".join(parts)
 
 
 def incident_events(samples: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -119,11 +148,17 @@ def format_message(
     icon = ":no_entry:" if x.get("cause") == "tls_blocked" else ":red_circle:"
     verb = "incident" if name == "incident_start" else "incident update"
     lines = [f"{icon} *{device}* {verb}: {x.get('scope')} - {services}", f"Likely cause: {cause}"]
+    home = x.get("scope") in HOME_SCOPES
     for t in (x.get("targets") or [])[:5]:
         detail = f"{_fmt_ms(t.get('current_ms'))} vs {_fmt_ms(t.get('baseline_ms'))}"
         if "loss" in (t.get("reason") or ""):
             detail += f", loss {100 * float(t.get('loss', 0)):.0f}%"
-        lines.append(f"- {t.get('target_id')} ({t.get('kind')}, {t.get('dst_ip')}): {detail}")
+        if home:
+            lines.append(f"- {t.get('target_id')}: LAN part of its connections {detail}")
+        else:
+            lines.append(f"- {t.get('target_id')} ({t.get('kind')}, {t.get('dst_ip')}): {detail}")
+    for client, cx in list((x.get("clients") or {}).items())[:5]:
+        lines.append(_client_line(client, cx or {}))
     if control is not None and x.get("scope") != "access":
         if control:
             lines.append("AWS control: also degraded from eu-central-1, so probably the service itself")
@@ -132,7 +167,7 @@ def format_message(
     if note:
         lines.append(note)
     if grafana:
-        lines.append(f"{grafana}d/heimdall-overview")
+        lines.append(f"{grafana}d/{'heimdall-clients' if home else 'heimdall-overview'}")
     return "\n".join(lines)
 
 

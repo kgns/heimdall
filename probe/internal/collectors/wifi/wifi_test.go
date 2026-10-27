@@ -144,7 +144,9 @@ func TestCollectorPoll(t *testing.T) {
 
 	// Second poll: the station's counters moved, so deltas appear; no new
 	// joins.
-	responses["-i wl0 sta_info "+sta] = []byte(strings.Replace(string(staInfo), "tx pkts retries: 898", "tx pkts retries: 908", 1))
+	second := strings.Replace(string(staInfo), "tx pkts retries: 898", "tx pkts retries: 908", 1)
+	second = strings.Replace(second, "tx total pkts sent: 7378", "tx total pkts sent: 7478", 1)
+	responses["-i wl0 sta_info "+sta] = []byte(second)
 	got = nil
 	c.Poll(context.Background())
 	for _, s := range got {
@@ -161,5 +163,11 @@ func TestCollectorPoll(t *testing.T) {
 				t.Errorf("radio %v", s.Extra)
 			}
 		}
+	}
+	// The radio's busy share from the first poll and the retry share of
+	// the second reach the client context used by the detector.
+	cx = c.ClientContext("id-" + sta)
+	if cx["radio_busy"] != int64(37) || cx["retry_pct"] == nil {
+		t.Errorf("context %v", cx)
 	}
 }

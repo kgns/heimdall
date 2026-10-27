@@ -6,7 +6,7 @@ cloud-side anomaly detection and cause classification.
 ## Layout
 
 ```
-probe/      Go module: heimdall-probe (runs on the CPE) and, later, heimdall-reflector
+probe/      Go module: heimdall-probe (runs on the CPE), heimdall-reflector and heimdall-client
 catalog/    measurement targets by category, plus regional packs
 cloud/      Python ingest, detection and analysis code
 terraform/  AWS and Cloudflare infrastructure
@@ -24,6 +24,7 @@ Requires Go 1.26.
 make test         # unit tests
 make lint         # go vet, staticcheck, gofmt
 make build        # bin/linux-armv7, bin/linux-arm64, bin/host
+make build-client # bin/client/heimdall-client-{darwin-arm64,darwin-amd64,linux-amd64}
 ```
 
 Binaries are static (`CGO_ENABLED=0`), so they run on the CPE without any
@@ -82,7 +83,10 @@ Context collectors record what can explain a latency change:
 |---|---|---|
 | `wan` | rx/tx bits and packets per second, drops and errors of the default-route interface | 1 s |
 | `cpu` | CPU states, load, and UDP/TCP/ICMP error counter deltas from `/proc/net/snmp` | 1 s |
-| `lan` | ping to each LAN client, with its bridge port and Wi-Fi or wired medium | 5 s |
+| `lan` | ping burst to each LAN client, with its bridge port, medium and Wi-Fi context | 5 s |
+| `flow` | every TCP and QUIC handshake of a LAN client, split into LAN and WAN parts (see [LAN clients](#lan-clients)) | per connection |
+| `wifi_sta` | per Wi-Fi client: signal, noise, PHY rates, retries, power save, from `wl` or the mesh topology | 10 s |
+| `wifi_radio` | per radio: channel, busy and interference shares (`chanim_stats`), frame and retry counters | 10 s |
 | `dnshealth` | PID, memory and container memory limit/OOM count of dnsmasq and dnscrypt-proxy | 30 s |
 | `clock` | SNTP offset of the local clock; the clock is never changed | 60 s |
 
@@ -94,6 +98,67 @@ its upstreams (`upstream`), an optional cache-busting `uncached` layer and
 DoH resolvers reached directly (`doh`). Whoami TXT names (`identity`)
 reveal which resolver answers for the system path; samples on that path
 carry it as `resolver_id`, as do `dst_change` events.
+
+## LAN clients
+
+The CPE sits between every LAN client and the internet, so it can split each
+connection a client opens into the part on the home network and the part on
+the internet without anything installed on the client. The flow collector
+(`collectors.flows`, `internal/collectors/flows`) reads the LAN bridge
+through a packet socket with a kernel filter that keeps only handshake
+packets, TLS ClientHellos and DNS answers to clients. For each TCP
+connection:
+
+```
+client          CPE (br0)          server
+  SYN  ──────────► t0 ───────────────►
+       ◄────────── t1 ◄─────────── SYN-ACK      wan_ms = t1 - t0
+  ACK  ──────────► t2                           lan_ms = t2 - t1
+```
+
+QUIC is measured the same way from its long-header packets; its `lan_ms`
+includes the client's handshake processing, so LAN analysis uses TCP only.
+The flow accelerator moves established flows off the CPU after a few
+packets, but the handshake still passes through it. Each `flow` sample
+carries the client ID (the same salted MAC hash as `lan`), the service from
+the catalog's `domains` (named from the SNI, or the DNS answer the CPE gave
+the client), `wan_ms`, `lan_ms`, and where the client is attached: bridge
+port, mesh node, band and signal. `collectors.flows.names` sets how much of
+the destination leaves the CPE:
+
+| `names` | reported |
+|---|---|
+| `category` | the usage category only |
+| `service` | the catalog service (default) |
+| `raw` | also the server name and address, and the client's address and port; for prototypes on your own network only |
+
+The Wi-Fi collector (`collectors.wifi`, Broadcom `wl`) adds per-station and
+per-radio statistics, and reads the EasyMesh topology the CPE writes to
+`/tmp/zy1905.json` for the clients of mesh extenders. An extender reports
+the signal it receives from a client, which reads about 20 dB below what
+the client itself sees, so extender clients are judged by link rate rather
+than signal. LAN pings are sent in bursts (`collectors.lan.burst`): a Wi-Fi
+client in power save answers the first only after it wakes for a beacon,
+and the sample keeps the best of the rest.
+
+### heimdall-client
+
+`heimdall-client` measures from a laptop for a limited time, to check the
+CPE's view of the same machine. It pings the CPE and connects to it over
+TCP every second, opens TCP connections to the services the CPE measures,
+reads the laptop's own Wi-Fi link on macOS, and uploads as its own device.
+Each TCP sample carries the local address and port, so the dashboard and
+the daily analysis match it with the CPE's record of the same connection.
+
+```sh
+scripts/new-device-token mbp-kgns     # once; add the device to var.devices
+mkdir -p ~/.config/heimdall && cp mbp-kgns.token ~/.config/heimdall/token && chmod 600 ~/.config/heimdall/token
+./heimdall-client-darwin-arm64 -device mbp-kgns -duration 30m
+```
+
+It needs no root: macOS allows unprivileged ICMP sockets. Remove the
+quarantine flag of a downloaded binary with `xattr -d com.apple.quarantine`.
+`-no-upload` prints the samples instead.
 
 ## Self-test
 
@@ -136,6 +201,7 @@ the UI are lost on every deploy, so change dashboards in the generator.
 | overview | is a problem general or limited to some services? Per-service summary, latency relative to each destination's own median, ISP hops |
 | service | what happens on one service's paths? Per-destination RTT and loss, HTTPS phases, edges, failures, destination changes |
 | network | access network, DNS, LAN and probe health |
+| LAN clients | is it the home network or the internet? Per client LAN and WAN parts, signal, retries, radio airtime, Wi-Fi events, and the heimdall-client cross-check |
 
 The record's address is set by `heimdall-dnssync` (`terraform/dnssync.tf`)
 because the task's public IP changes on each deploy. The name is a direct
@@ -205,6 +271,24 @@ scope and a likely cause:
 - `dns_latency`: DNS resolution slowed down
 - `tls_blocked`: TCP connects but TLS fails, typical of SNI filtering
 
+LAN clients are watched the same way, through the LAN part of their own
+TCP handshakes (`flow/<client>` series). A client whose LAN part rises
+above its baseline opens a `client` incident; when several clients rise at
+once, at least two and half of the recently active ones, a `home`
+incident covers them. The cause comes from where the clients are attached:
+
+- `roaming`: the client moved between radios or nodes in the last 10 minutes
+- `weak_signal` (clients of the CPE, -75 dBm or weaker), `retransmissions`
+  (20% or more), `channel_busy` (radio 60% or more busy)
+- `extender` / `weak_link_extender`: behind a mesh extender, with a link
+  rate below 50 Mbit/s for the latter
+- `wired_lan`, or `lan_latency` when the Wi-Fi readings show nothing
+- for `home`: `extender` when all affected clients share one, `channel_busy`,
+  or `lan_wide`
+
+Client and home incidents carry each client's context (node, band, signal,
+retries, radio busy share) and link to the LAN clients dashboard.
+
 The ingest Lambda passes incident events to `heimdall-notifier`
 (`terraform/notify.tf`). The notifier keeps open incidents in the DynamoDB
 table `heimdall-incidents`. For a single-service incident on the CPE, it
@@ -224,8 +308,12 @@ previous UTC day. It writes the tables `daily_service` (percentiles, jitter,
 busy-hour inflation), `daily_compare` (degraded hours, attributed to the ISP
 side or the service side using the AWS control), `ip_asn` (RIPEstat origin
 AS of traceroute hops) and `path_borders` (where each path leaves the ISP,
-the next AS, and the latency added at that border). It also writes a
-`summary` JSON per day under `derived/` in the raw bucket. The Grafana
+the next AS, and the latency added at that border). For LAN clients it
+writes `daily_client` (LAN and WAN parts, pings, signal, retries, roams),
+`daily_client_service` (a client's WAN part next to the CPE's own TCP probe
+of the same service) and `daily_crosscheck` (heimdall-client connections
+matched with the CPE's split). It also writes a `summary` JSON per day
+under `derived/` in the raw bucket, with flagged clients. The Grafana
 dashboard "heimdall / daily analysis" shows them. To run past days:
 
 ```sh
@@ -289,7 +377,16 @@ To install:
    UUID (for example `7e0a-a000-a417-e002`) and the Execution Environment
    `heimdall`. Keep the file name as built: zyeed checks that it starts with
    `heimdall_`.
+5. Activate the Execution Unit if the probe does not start. The firmware
+   does not start a newly installed unit by itself; after a reboot,
+   `/bin/start.sh` does.
+
+To upgrade, build a new package and update or reinstall the Deployment
+Unit the same way. The LAN salt (`/opt/heimdall/etc/lan.salt`) is not part
+of the package, so client IDs survive upgrades.
 
 The probe logs to `/tmp/heimdall/probe.log` inside the container, which on
-the host is `/tmp/heimdall/probe.log`. Its samples arrive in Athena as
-before.
+the host is `/tmp/heimdall/probe.log` too: the container shares the host's
+`/tmp` and network. It reads `wl` and the mesh topology from there, and
+captures on `br0` with the raw socket access it already has for ICMP. Its
+samples arrive in Athena as before.

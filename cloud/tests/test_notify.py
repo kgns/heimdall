@@ -141,3 +141,23 @@ def test_ioda_note():
 
     # A failing fetch inside ioda_events is logged and treated as no events.
     assert "no outage" in ioda_note(34984, 1_793_020_000, fetch=down)
+
+
+def test_format_client_incident():
+    ev = {
+        "extra": {
+            "event": "incident_start",
+            "scope": "client",
+            "cause": "weak_signal",
+            "services": ["aaa"],
+            "targets": [
+                {"target_id": "flow/aaa", "kind": "flow", "current_ms": 40, "baseline_ms": 3, "reason": "latency"}
+            ],
+            "clients": {"aaa": {"node": "cpe", "band": "5GHz", "rssi": -80, "tx_rate_mbps": 52.0}},
+        }
+    }
+    text = format_message("home", ev, None, "https://g/")
+    assert "client - aaa" in text and "weak Wi-Fi signal" in text
+    assert "flow/aaa: LAN part of its connections 40 ms vs 3 ms" in text
+    assert "- client aaa: cpe, 5GHz, -80 dBm, 52 Mbit/s" in text
+    assert "AWS control" not in text and text.endswith("https://g/d/heimdall-clients")

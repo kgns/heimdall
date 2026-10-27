@@ -56,8 +56,10 @@ for the ISP's AS or the country.
 lan_p50/lan_p90: the client's reply time to the server's SYN-ACK, measured at the CPE (the Wi-Fi or \
 Ethernet round trip plus the client's own delay; a few ms is normal for Wi-Fi, 1-2 ms for Ethernet). \
 wan_p50/wan_p90: the server's answer to the client's SYN, the internet part. lan_busy_p50/lan_night_p50: \
-LAN part in the evening and at night. node: the CPE or a mesh extender; band; rssi_avg/rssi_min (dBm, \
-below -75 is weak); retry_pct: share of frames the CPE had to retransmit to the client; roams: moves \
+LAN part in the evening and at night. node: the CPE or a mesh extender; band; rssi_avg/rssi_min (dBm; \
+for clients of the CPE below -75 is weak; an extender reports the signal it receives, which reads about \
+20 dB lower than the client sees, so judge extender clients by tx_rate_p50, their link rate); \
+retry_pct: share of frames the CPE had to retransmit to the client; roams: moves \
 between nodes or radios; ping_p50 / ping_first_p50: echo round trip when awake / when the client had to \
 wake from power save first (power save, not a fault). wan_vs_cpe_probe: the client's WAN part over the \
 CPE's own TCP probe of the same services; above 1.3 the client reaches other servers or meets queueing. \

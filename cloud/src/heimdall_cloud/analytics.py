@@ -209,6 +209,7 @@ def daily_compare(athena: Athena, day: date, control: str) -> list[dict[str, Any
 # Thresholds for the per-client findings. A healthy Wi-Fi client answers a
 # SYN-ACK within a few milliseconds; a wired one within one or two.
 WEAK_RSSI_DBM = -75
+SLOW_LINK_MBPS = 50.0
 SLOW_LAN_P90_MS = 30.0
 HIGH_RETRY_PCT = 20.0
 MANY_ROAMS = 10
@@ -265,7 +266,8 @@ def daily_client(athena: Athena, day: date) -> list[dict[str, Any]]:
             approx_percentile(rtt_ms, 0.5) FILTER (WHERE status = 'ok') AS ping_p50,
             approx_percentile(rtt_ms, 0.95) FILTER (WHERE status = 'ok') AS ping_p95,
             approx_percentile(CAST(json_extract_scalar(extra, '$.burst_ms[0]') AS double), 0.5) AS ping_first_p50,
-            100.0 * count_if(status <> 'ok') / count(*) AS ping_loss_pct
+            100.0 * count_if(status <> 'ok') / count(*) AS ping_loss_pct,
+            max_by(json_extract_scalar(extra, '$.medium'), ts_ms) AS ping_medium
           FROM heimdall.samples WHERE {day_filter(day)} AND kind = 'lan'
           GROUP BY 1, 2
         ),
@@ -281,7 +283,8 @@ def daily_client(athena: Athena, day: date) -> list[dict[str, Any]]:
         k AS (
           SELECT device, client FROM fa UNION SELECT device, client FROM w UNION SELECT device, client FROM p
         )
-        SELECT k.device, k.client, coalesce(fa.node, w.wifi_node, 'cpe') AS node, fa.medium,
+        SELECT k.device, k.client, coalesce(fa.node, w.wifi_node, 'cpe') AS node,
+          coalesce(fa.medium, p.ping_medium) AS medium,
           coalesce(w.wifi_band, fa.band) AS band, fa.flows, fa.unanswered, fa.lan_p50, fa.lan_p90,
           fa.lan_busy_p50, fa.lan_night_p50, fa.wan_p50, fa.wan_p90,
           w.rssi_avg, w.rssi_min, w.snr_avg, w.retry_pct, w.tx_rate_p50, w.ps_share,
@@ -400,8 +403,14 @@ def client_findings(clients: list[dict[str, Any]], services: list[dict[str, Any]
     out = []
     for c in sorted(clients, key=lambda c: -(c["flows"] or 0)):
         flags = []
-        if c["rssi_avg"] is not None and c["rssi_avg"] <= WEAK_RSSI_DBM:
+        # A mesh extender reports the signal it receives from the client,
+        # which reads far below what the client itself sees, so extender
+        # clients are judged by their link rate instead.
+        on_cpe = (c["node"] or "cpe") == "cpe"
+        if on_cpe and c["rssi_avg"] is not None and c["rssi_avg"] <= WEAK_RSSI_DBM:
             flags.append("weak_signal")
+        if not on_cpe and c["tx_rate_p50"] is not None and c["tx_rate_p50"] < SLOW_LINK_MBPS:
+            flags.append("weak_link")
         if c["lan_p90"] is not None and c["lan_p90"] >= SLOW_LAN_P90_MS:
             flags.append("slow_lan")
         if c["retry_pct"] is not None and c["retry_pct"] >= HIGH_RETRY_PCT:

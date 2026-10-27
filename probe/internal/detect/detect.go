@@ -42,6 +42,10 @@ var rules = map[sample.Kind]rule{
 	sample.KindSTUN:    {window: 5, minSamples: 20, ratio: 1.5, delta: 15, minLost: 3, lossAbs: 0.10},
 	sample.KindHTTP:    {window: 10, minSamples: 6, ratio: 2.0, delta: 50, minLost: 3, lossAbs: 0.30},
 	sample.KindDNS:     {window: 5, minSamples: 6, ratio: 3.0, delta: 50, minLost: 3, lossAbs: 0.30},
+	// The LAN part of a client's own TCP handshakes. Clients open
+	// connections in bursts, so the window is longer; the series has no
+	// loss, since an unanswered SYN says nothing about the LAN.
+	sample.KindFlow: {window: 5, minSamples: 8, ratio: 2.0, delta: 10},
 }
 
 const (
@@ -71,13 +75,23 @@ type Options struct {
 	// an access incident, with at least AccessMin of them.
 	AccessFraction float64
 	AccessMin      int
+	// HomeMin clients with a slow LAN part at once, and at least
+	// HomeFraction of the clients active in the last minutes, make a home
+	// incident (the CPE, a radio or an extender) instead of one incident
+	// per client.
+	HomeMin      int
+	HomeFraction float64
 }
+
+// ClientContext describes where a LAN client is attached: node, medium,
+// band, signal, retries and the busy share of its radio. It may return nil.
+type ClientContext func(client string) map[string]any
 
 // DefaultOptions are tuned for a CPE measuring a few dozen services.
 func DefaultOptions() Options {
 	return Options{
 		Warmup: 15 * time.Minute, AccessServices: []string{"isp-hop", "isp-gateway"},
-		AccessFraction: 0.3, AccessMin: 3,
+		AccessFraction: 0.3, AccessMin: 3, HomeMin: 2, HomeFraction: 0.5,
 	}
 }
 
@@ -98,6 +112,8 @@ type series struct {
 	service  string
 	category string
 	noLoss   bool
+	// client is the LAN client of a flow series.
+	client   string
 	buckets  []bucket // oldest first, the last is the open minute
 	minutes  int
 	base     float64
@@ -123,13 +139,16 @@ type tlsStat struct {
 // Incident is a group of anomalies with one scope.
 type Incident struct {
 	ID       string
-	Scope    string // access, service, dns
+	Scope    string // access, service, dns, client, home
 	Cause    string
 	Service  string
 	Category string
 	Started  time.Time
 	services []string
 	lastSent time.Time
+	// context is, for client and home incidents, where each client was
+	// attached when the incident started.
+	context map[string]map[string]any
 }
 
 // Detector consumes samples and reports anomalies and incidents through
@@ -144,6 +163,15 @@ type Detector struct {
 	services   map[string]string // service -> category, of every measured service
 	incidents  map[string]*Incident
 	started    time.Time
+	clientCtx  ClientContext
+}
+
+// SetClientContext gives the detector what it reports about the clients
+// of client and home incidents.
+func (d *Detector) SetClientContext(f ClientContext) {
+	d.mu.Lock()
+	d.clientCtx = f
+	d.mu.Unlock()
 }
 
 // New returns a detector.
@@ -163,6 +191,10 @@ func (d *Detector) Write(s *sample.Sample) error {
 			d.dstChanges[s.Service] = time.UnixMilli(s.TS)
 			d.mu.Unlock()
 		}
+		return nil
+	}
+	if s.Kind == sample.KindFlow {
+		d.writeFlow(s)
 		return nil
 	}
 	if _, ok := rules[s.Kind]; !ok || s.TargetID == "" || s.Kind == sample.KindDNS && dnsLayerSkipped(s) {
@@ -205,6 +237,33 @@ func (d *Detector) Write(s *sample.Sample) error {
 		}
 	}
 	return nil
+}
+
+// writeFlow files the LAN part of a client's TCP handshake. QUIC is left
+// out because its LAN part includes the client's handshake processing.
+func (d *Detector) writeFlow(s *sample.Sample) {
+	if s.Status != sample.StatusOK || s.Extra["proto"] != "tcp" {
+		return
+	}
+	lan, ok := s.Extra["lan_ms"].(float64)
+	client, _ := s.Extra["client"].(string)
+	if !ok || client == "" {
+		return
+	}
+	k := key{target: "flow/" + client, kind: sample.KindFlow}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	sr := d.series[k]
+	if sr == nil {
+		sr = &series{key: k, service: "lan", category: "home", noLoss: true, client: client, buckets: []bucket{{}}}
+		d.series[k] = sr
+	}
+	sr.lastSeen = time.UnixMilli(s.TS)
+	b := &sr.buckets[len(sr.buckets)-1]
+	b.total++
+	if len(b.values) < maxValues {
+		b.values = append(b.values, float32(lan))
+	}
 }
 
 // Close implements sample.Sink.
@@ -365,12 +424,18 @@ func (d *Detector) anomalyEvent(sr *series, event string, now time.Time) sample.
 // correlate groups the anomalous series into incidents.
 func (d *Detector) correlate(now time.Time) []sample.Sample {
 	byService := map[string][]*series{}
-	var access, dns []*series
+	var access, dns, clients []*series
+	activeClients := 0
 	for _, sr := range d.series {
+		if sr.key.kind == sample.KindFlow && now.Sub(sr.lastSeen) <= 10*time.Minute {
+			activeClients++
+		}
 		if !sr.anomalous {
 			continue
 		}
 		switch {
+		case sr.key.kind == sample.KindFlow:
+			clients = append(clients, sr)
 		case slices.Contains(d.opt.AccessServices, sr.service):
 			access = append(access, sr)
 		case sr.key.kind == sample.KindDNS:
@@ -413,6 +478,19 @@ func (d *Detector) correlate(now time.Time) []sample.Sample {
 	if len(dns) > 0 {
 		want["dns"], members["dns"] = &Incident{Scope: "dns", Cause: "dns_latency", Category: "infra", Service: "dns"}, dns
 	}
+	if len(clients) > 0 {
+		home := len(clients) >= d.opt.HomeMin && float64(len(clients)) >= d.opt.HomeFraction*float64(activeClients)
+		if home {
+			want["home"] = &Incident{Scope: "home", Category: "home", Service: "lan"}
+			members["home"] = clients
+		} else {
+			for _, sr := range clients {
+				k := "client:" + sr.client
+				want[k] = &Incident{Scope: "client", Category: "home", Service: "lan"}
+				members[k] = []*series{sr}
+			}
+		}
+	}
 	for svc, ts := range d.tls {
 		attempts, fails := sumLast(ts.attempts, 10), sumLast(ts.tlsFail, 10)
 		if attempts >= 5 && float64(fails) >= 0.8*float64(attempts) && now.Sub(d.started) >= d.opt.Warmup/3 {
@@ -439,10 +517,22 @@ func (d *Detector) correlate(now time.Time) []sample.Sample {
 		case w != nil && cur == nil:
 			w.ID, w.Started, w.lastSent = newID(), now, now
 			w.services = serviceList(members[k], w.Service)
+			if w.Scope == "client" || w.Scope == "home" {
+				w.services = clientList(members[k])
+				w.context = d.contexts(members[k])
+				w.Cause = clientCause(w.Scope, w.context)
+			}
 			d.incidents[k] = w
 			out = append(out, d.incidentEvent(w, "incident_start", members[k], now))
 		case w != nil:
 			svcs := serviceList(members[k], cur.Service)
+			if cur.Scope == "client" || cur.Scope == "home" {
+				svcs = clientList(members[k])
+				if !slices.Equal(svcs, cur.services) && now.Sub(cur.lastSent) >= updateEvery {
+					cur.context = d.contexts(members[k])
+					cur.Cause = clientCause(cur.Scope, cur.context)
+				}
+			}
 			if !slices.Equal(svcs, cur.services) && now.Sub(cur.lastSent) >= updateEvery {
 				cur.services, cur.lastSent = svcs, now
 				out = append(out, d.incidentEvent(cur, "incident_update", members[k], now))
@@ -486,6 +576,104 @@ func serviceList(ss []*series, fallback string) []string {
 	return out
 }
 
+func clientList(ss []*series) []string {
+	out := make([]string, 0, len(ss))
+	for _, sr := range ss {
+		out = append(out, sr.client)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (d *Detector) contexts(ss []*series) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for _, sr := range ss[:min(len(ss), maxTargetsInEvent)] {
+		var cx map[string]any
+		if d.clientCtx != nil {
+			cx = d.clientCtx(sr.client)
+		}
+		if cx == nil {
+			cx = map[string]any{}
+		}
+		out[sr.client] = cx
+	}
+	return out
+}
+
+// Thresholds for the likely cause of a client's slow LAN part.
+const (
+	weakRSSI      = -75
+	highRetryPct  = 20.0
+	busyRadioPct  = 60.0
+	slowLinkMbps  = 50.0
+	recentRoaming = 10 * time.Minute
+)
+
+// clientCause names the likely cause of a client or home incident from
+// where the clients are attached. An extender reports the signal it
+// receives from the client, which reads well below what the client itself
+// sees, so extender clients are judged by their link rate instead.
+func clientCause(scope string, ctx map[string]map[string]any) string {
+	if scope == "home" {
+		nodes, busy := map[string]bool{}, 0
+		for _, cx := range ctx {
+			node, _ := cx["node"].(string)
+			nodes[node] = true
+			if v, ok := num(cx["radio_busy"]); ok && v >= busyRadioPct {
+				busy++
+			}
+		}
+		switch {
+		case len(nodes) == 1 && !nodes["cpe"] && !nodes[""]:
+			return "extender"
+		case busy*2 >= len(ctx):
+			return "channel_busy"
+		default:
+			return "lan_wide"
+		}
+	}
+	for _, cx := range ctx {
+		node, _ := cx["node"].(string)
+		medium, _ := cx["medium"].(string)
+		if t, ok := num(cx["last_roam_ms"]); ok && time.Since(time.UnixMilli(int64(t))) <= recentRoaming {
+			return "roaming"
+		}
+		if node != "" && node != "cpe" {
+			if v, ok := num(cx["tx_rate_mbps"]); ok && v > 0 && v < slowLinkMbps {
+				return "weak_link_extender"
+			}
+			return "extender"
+		}
+		if v, ok := num(cx["rssi"]); ok && v <= weakRSSI {
+			return "weak_signal"
+		}
+		if v, ok := num(cx["retry_pct"]); ok && v >= highRetryPct {
+			return "retransmissions"
+		}
+		if v, ok := num(cx["radio_busy"]); ok && v >= busyRadioPct {
+			return "channel_busy"
+		}
+		if medium == "wired" {
+			return "wired_lan"
+		}
+	}
+	return "lan_latency"
+}
+
+func num(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case int:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	case uint64:
+		return float64(x), true
+	}
+	return 0, false
+}
+
 const maxTargetsInEvent = 12
 
 func (d *Detector) incidentEvent(inc *Incident, event string, ss []*series, now time.Time) sample.Sample {
@@ -513,6 +701,9 @@ func (d *Detector) incidentEvent(inc *Incident, event string, ss []*series, now 
 	}
 	if inc.Scope == "access" {
 		x["measured_services"] = len(d.services)
+	}
+	if len(inc.context) > 0 {
+		x["clients"] = inc.context
 	}
 	return sample.Sample{
 		TS: now.UnixMilli(), Kind: sample.KindEvent, Status: sample.StatusOK, Category: inc.Category,

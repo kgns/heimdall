@@ -241,6 +241,14 @@ func (c *collectors) discoverLAN() {
 		return
 	}
 	seen := map[string]bool{}
+	// Events are emitted after the lock is released: the detector reads
+	// client context under its own lock, which takes this one.
+	var events []sample.Sample
+	defer func() {
+		for _, ev := range events {
+			c.rec.Emit(ev)
+		}
+	}()
 	c.lanMu.Lock()
 	defer c.lanMu.Unlock()
 	for _, f := range found {
@@ -248,13 +256,13 @@ func (c *collectors) discoverLAN() {
 		cur, known := c.lanClients[f.ID]
 		if !known {
 			c.lanClients[f.ID] = &lanClient{Client: f}
-			c.rec.Emit(sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, Category: "home", Service: "lan",
+			events = append(events, sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, Category: "home", Service: "lan",
 				TargetID: "lan/" + f.ID, DstIP: f.IP.String(),
 				Extra: map[string]any{"event": "lan_client_seen", "iface": f.Iface, "port": f.Port, "medium": f.Medium}})
 			continue
 		}
 		if cur.Medium != f.Medium && f.Medium != "" {
-			c.rec.Emit(sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, Category: "home", Service: "lan",
+			events = append(events, sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, Category: "home", Service: "lan",
 				TargetID: "lan/" + f.ID, DstIP: f.IP.String(),
 				Extra: map[string]any{"event": "lan_client_moved", "port": f.Port, "medium": f.Medium, "prev_port": cur.Port, "prev_medium": cur.Medium}})
 		}
@@ -267,7 +275,7 @@ func (c *collectors) discoverLAN() {
 		cl.misses++
 		if cl.misses >= l.DisappearAfter {
 			delete(c.lanClients, id)
-			c.rec.Emit(sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, Category: "home", Service: "lan",
+			events = append(events, sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, Category: "home", Service: "lan",
 				TargetID: "lan/" + id, Extra: map[string]any{"event": "lan_client_gone"}})
 		}
 	}

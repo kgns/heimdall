@@ -216,3 +216,94 @@ func TestTLSBlocked(t *testing.T) {
 		t.Fatalf("%+v", ends)
 	}
 }
+
+func flow(client string, lan float64) feed {
+	return feed{target: "flow/" + client, service: "other", category: "unclassified", kind: sample.KindFlow, perMinute: 10,
+		extra: map[string]any{"proto": "tcp", "client": client, "lan_ms": lan}}
+}
+
+func TestClientIncident(t *testing.T) {
+	d := New(DefaultOptions())
+	d.SetClientContext(func(c string) map[string]any {
+		if c == "aaa" {
+			return map[string]any{"node": "cpe", "medium": "wifi", "rssi": -80, "band": "5GHz"}
+		}
+		return map[string]any{"node": "cpe", "medium": "wired"}
+	})
+	a, b, c := flow("aaa", 3), flow("bbb", 1.5), flow("ccc", 2)
+	if ev := run(d, 0, 30, a, b, c); len(ev) != 0 {
+		t.Fatalf("events during a steady half hour: %v", ev)
+	}
+	slow := flow("aaa", 40)
+	ev := run(d, 30, 36, slow, b, c)
+	if len(ev["incident_start"]) != 1 {
+		t.Fatalf("%v", ev)
+	}
+	inc := ev["incident_start"][0]
+	if inc.Extra["scope"] != "client" || inc.Extra["cause"] != "weak_signal" || inc.Category != "home" {
+		t.Fatalf("%+v", inc.Extra)
+	}
+	if svcs := inc.Extra["services"].([]string); len(svcs) != 1 || svcs[0] != "aaa" {
+		t.Fatalf("services %v", svcs)
+	}
+	if cx := inc.Extra["clients"].(map[string]map[string]any)["aaa"]; cx["rssi"] != -80 {
+		t.Fatalf("context %v", inc.Extra["clients"])
+	}
+	ev = run(d, 36, 50, a, b, c)
+	if len(ev["incident_end"]) != 1 {
+		t.Fatalf("no end: %v", ev)
+	}
+}
+
+func TestHomeIncident(t *testing.T) {
+	d := New(DefaultOptions())
+	d.SetClientContext(func(string) map[string]any {
+		return map[string]any{"node": "WX5600", "medium": "wifi", "tx_rate_mbps": 300.0}
+	})
+	a, b, c := flow("aaa", 3), flow("bbb", 2), flow("ccc", 2)
+	run(d, 0, 30, a, b, c)
+	ev := run(d, 30, 36, flow("aaa", 30), flow("bbb", 25), c)
+	if len(ev["incident_start"]) != 1 {
+		t.Fatalf("%v", ev)
+	}
+	inc := ev["incident_start"][0]
+	if inc.Extra["scope"] != "home" || inc.Extra["cause"] != "extender" {
+		t.Fatalf("%+v", inc.Extra)
+	}
+	if svcs := inc.Extra["services"].([]string); len(svcs) != 2 {
+		t.Fatalf("services %v", svcs)
+	}
+}
+
+func TestClientFlowsFiltered(t *testing.T) {
+	d := New(DefaultOptions())
+	q := flow("aaa", 3)
+	q.extra = map[string]any{"proto": "quic", "client": "aaa", "lan_ms": 3.0}
+	to := flow("bbb", 3)
+	to.status = sample.StatusTimeout
+	run(d, 0, 2, q, to)
+	if len(d.series) != 0 {
+		t.Fatalf("series from QUIC or unanswered flows: %v", d.series)
+	}
+}
+
+func TestClientCause(t *testing.T) {
+	now := float64(time.Now().UnixMilli())
+	cases := []struct {
+		cx   map[string]any
+		want string
+	}{
+		{map[string]any{"node": "cpe", "rssi": -60, "last_roam_ms": now}, "roaming"},
+		{map[string]any{"node": "WX5600", "rssi": -80, "tx_rate_mbps": 380.0}, "extender"},
+		{map[string]any{"node": "WX5600", "tx_rate_mbps": 24.0}, "weak_link_extender"},
+		{map[string]any{"node": "cpe", "rssi": -60, "retry_pct": 35.0}, "retransmissions"},
+		{map[string]any{"node": "cpe", "rssi": -60, "radio_busy": int64(75)}, "channel_busy"},
+		{map[string]any{"node": "cpe", "medium": "wired"}, "wired_lan"},
+		{map[string]any{"node": "cpe", "rssi": -50}, "lan_latency"},
+	}
+	for _, c := range cases {
+		if got := clientCause("client", map[string]map[string]any{"x": c.cx}); got != c.want {
+			t.Errorf("%v: got %s, want %s", c.cx, got, c.want)
+		}
+	}
+}

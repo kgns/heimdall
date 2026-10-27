@@ -247,9 +247,13 @@ def test_daily_client_and_findings():
     assert svc[0]["ratio"] == 2.0
 
     found = analytics.client_findings(clients, svc)
+    # On the CPE the same signal is weak; on an extender the link rate decides.
+    on_cpe = analytics.client_findings([{**clients[0], "node": "cpe"}], [])
+    slow_link = analytics.client_findings([{**clients[0], "tx_rate_p50": 24.0}], [])
+    assert "weak_signal" in on_cpe[0]["flags"] and "weak_link" in slow_link[0]["flags"]
     assert [f["client"] for f in found] == ["bbb", "aaa"]
     assert found[0]["flags"] == []
-    assert found[1]["flags"] == ["weak_signal", "slow_lan", "many_retries", "roaming", "wan_slower_than_cpe_probe"]
+    assert found[1]["flags"] == ["slow_lan", "many_retries", "roaming", "wan_slower_than_cpe_probe"]
     assert found[1]["wan_vs_cpe_probe"] == 2.0 and "band" not in found[0]
 
     cross_rows = [
