@@ -24,18 +24,35 @@ func TestISPResolvers(t *testing.T) {
 		"etc/ppp/resolv.conf": {Data: []byte("nameserver 192.168.1.1\n")},
 		"tmp/resolv.conf.ppp": {Data: []byte("nameserver 203.0.113.53\nnameserver 198.51.100.53\n")},
 	}
-	got, src := ispResolvers(fsys, r, all)
+	got, src := ispResolvers(fsys, r, all, "ppp0")
 	if src != "/tmp/resolv.conf.ppp" || len(got) != 2 || got[0] != netip.MustParseAddrPort("203.0.113.53:53") {
 		t.Fatalf("got %v from %s", got, src)
 	}
 	// No usable file: the configured servers, minus those the route guard
 	// blocks.
-	got, src = ispResolvers(fstest.MapFS{}, r, all)
+	got, src = ispResolvers(fstest.MapFS{}, r, all, "ppp0")
 	if src != "config" || len(got) != 1 || got[0].Addr() != netip.MustParseAddr("10.234.0.1") {
 		t.Fatalf("got %v from %s", got, src)
 	}
-	if got, _ := ispResolvers(fstest.MapFS{}, r, func(netip.Addr) bool { return false }); len(got) != 0 {
+	if got, _ := ispResolvers(fstest.MapFS{}, r, func(netip.Addr) bool { return false }, "ppp0"); len(got) != 0 {
 		t.Fatalf("guarded servers kept: %v", got)
+	}
+}
+
+func TestISPResolversFromPPPD(t *testing.T) {
+	// Two sessions in the database; the record of the WAN interface wins.
+	tdb := []byte("\x00\x00pppd1IFNAME=ppp0;IPLOCAL=10.0.0.2;DNS1=192.0.2.1;DNS2=192.0.2.2;USEPEERDNS=1\x00" +
+		"\x00pppd2PPPD_PID=9;IFNAME=ppp1.4;IPLOCAL=10.234.57.8;IPREMOTE=10.234.0.1;DNS1=213.74.1.1;DNS2=213.74.0.1;USEPEERDNS=1\x00")
+	fsys := fstest.MapFS{
+		"var/run/pppd2.tdb":   {Data: tdb},
+		"etc/ppp/resolv.conf": {Data: []byte("nameserver 198.51.100.9\n")},
+	}
+	r := config.Default().Resolver
+	r.Mode = config.ResolverISP
+	got, src := ispResolvers(fsys, r, func(netip.Addr) bool { return true }, "ppp1.4")
+	if src != "/var/run/pppd*.tdb" || len(got) != 2 || got[0] != netip.MustParseAddrPort("213.74.1.1:53") ||
+		got[1] != netip.MustParseAddrPort("213.74.0.1:53") {
+		t.Fatalf("got %v from %s", got, src)
 	}
 }
 

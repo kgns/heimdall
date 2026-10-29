@@ -55,8 +55,10 @@ type Config struct {
 // servers it measures are the ones the ISP's DNS hands its customers, and
 // a DNS service the user chose (a privacy resolver, a filtering service)
 // does not move the measurements to other servers. The ISP's resolvers are
-// read from ISPFiles (resolv.conf format, written by the PPP or DHCP client
-// on many CPEs), falling back to ISPServers. The user's own DNS path is
+// read from ISPFiles: pppd's session databases (*.tdb), which keep the DNS
+// servers the ISP sent during PPP negotiation even when the CPE uses other
+// servers, or resolv.conf files written by the PPP or DHCP client. They
+// fall back to ISPServers. The user's own DNS path is
 // still measured by the dns probes.
 type Resolver struct {
 	Mode       string        `yaml:"mode"`
@@ -453,7 +455,7 @@ func Default() Config {
 		},
 		Resolver: Resolver{
 			Mode: ResolverSystem, Timeout: 2 * time.Second,
-			ISPFiles: []string{"/etc/ppp/resolv.conf", "/var/run/ppp/resolv.conf", "/tmp/resolv.conf.ppp", "/tmp/resolv.conf.auto"},
+			ISPFiles: []string{"/var/run/pppd*.tdb", "/etc/ppp/resolv.conf", "/var/run/ppp/resolv.conf", "/tmp/resolv.conf.ppp", "/tmp/resolv.conf.auto"},
 		},
 		Upload: Upload{
 			TokenFile: "/misc/heimdall/upload.token", Interval: 10 * time.Second, Timeout: 15 * time.Second,

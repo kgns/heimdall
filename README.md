@@ -69,9 +69,11 @@ as a privacy resolver without the user's location, makes CDNs pick distant
 servers; the ISP's view of its service should not depend on that. The
 user's own DNS path is still measured as `dns` layers, next to `isp` and
 `isp_uncached` layers for the ISP's resolvers. Their addresses come from
-the PPP or DHCP client's resolv.conf where the CPE writes one
-(`resolver.isp_files`), else from `resolver.isp_servers`; `start` and
-`heartbeat` samples carry `resolver_mode`.
+`resolver.isp_files`: pppd's session database (`/var/run/pppd*.tdb`),
+which keeps the DNS servers the ISP sent during PPP negotiation even when
+the CPE is set to other servers, or a resolv.conf written by the PPP or
+DHCP client; else from `resolver.isp_servers`. `start` and `heartbeat`
+samples carry `resolver_mode` and `isp_resolvers`.
 
 ## Measurements
 

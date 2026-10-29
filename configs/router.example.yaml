@@ -210,10 +210,12 @@ collectors:
 # measured by the dns probes, and the ISP's resolvers get dns layers
 # (isp, isp_uncached) and an identity probe of their own. The resolvers
 # come from the first isp_files entry that names servers reached through
-# the WAN, else from isp_servers. Uploads fall back to the CPE's resolver.
+# the WAN, else from isp_servers. A .tdb entry is a pppd session database,
+# which keeps the servers the ISP sent in PPP negotiation; the others are
+# resolv.conf files. Uploads fall back to the CPE's resolver.
 resolver:
   mode: system
-  isp_files: [/etc/ppp/resolv.conf, /var/run/ppp/resolv.conf, /tmp/resolv.conf.ppp, /tmp/resolv.conf.auto]
+  isp_files: [/var/run/pppd*.tdb, /etc/ppp/resolv.conf, /var/run/ppp/resolv.conf, /tmp/resolv.conf.ppp, /tmp/resolv.conf.auto]
   isp_servers: []
   timeout: 2s
 

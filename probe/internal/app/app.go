@@ -168,7 +168,7 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 	resolverMode := config.ResolverSystem
 	var ispRes *resolve.ServerResolver
 	if cfg.Resolver.Mode == config.ResolverISP {
-		servers, source := ispResolvers(h.FS, cfg.Resolver, nw.Allowed)
+		servers, source := ispResolvers(h.FS, cfg.Resolver, nw.Allowed, wan.Iface)
 		if len(servers) == 0 {
 			log.Warn("no ISP resolver found; resolving through the CPE's resolver", "files", cfg.Resolver.ISPFiles)
 			rec.Emit(sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, Category: "infra", Service: "dns",
@@ -587,11 +587,13 @@ func addrPortStrings(as []netip.AddrPort) []string {
 }
 
 // ispResolvers returns the ISP's resolvers: from the first of r.ISPFiles
-// that names usable IPv4 servers, else r.ISPServers. A server must be
+// that names usable IPv4 servers, else r.ISPServers. A .tdb entry is a
+// pppd database, holding the servers the ISP sent in IPCP; others are in
+// resolv.conf format. A server must be
 // reached through the WAN (allowed, the route guard), which leaves out the
 // CPE's own forwarder and LAN addresses; ISP resolvers may have private
 // addresses inside the ISP's network. source tells where they came from.
-func ispResolvers(fsys fs.FS, r config.Resolver, allowed func(netip.Addr) bool) (servers []netip.AddrPort, source string) {
+func ispResolvers(fsys fs.FS, r config.Resolver, allowed func(netip.Addr) bool, wanIface string) (servers []netip.AddrPort, source string) {
 	usable := func(as []netip.Addr) []netip.AddrPort {
 		var out []netip.AddrPort
 		for _, a := range as {
@@ -602,7 +604,13 @@ func ispResolvers(fsys fs.FS, r config.Resolver, allowed func(netip.Addr) bool) 
 		return out
 	}
 	for _, f := range r.ISPFiles {
-		as, err := sysinfo.ReadResolvConf(fsys, f)
+		var as []netip.Addr
+		var err error
+		if sysinfo.IsPPPDTDB(f) {
+			as, err = sysinfo.ReadPPPDNS(fsys, f, wanIface)
+		} else {
+			as, err = sysinfo.ReadResolvConf(fsys, f)
+		}
 		if err != nil {
 			continue
 		}
