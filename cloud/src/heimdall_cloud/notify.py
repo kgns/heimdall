@@ -1,13 +1,21 @@
 """Incident notifier, invoked asynchronously by the ingest Lambda with the
 incident events of a batch.
 
-Probes detect incidents themselves (``incident_start``, ``incident_update``,
-``incident_end`` events). The notifier keeps the open ones per device in
-DynamoDB, and for an incident on a CPE checks whether the cloud control
-probe has an open incident for the same services at the same time: if it
-does, the problem is most likely on the service's side; if it does not, it
-is in the access network or the ISP's path to the service. It then posts to
-Slack when a webhook URL is stored in SSM.
+Probes detect incidents themselves (``incident_start``,
+``incident_confirmed``, ``incident_update``, ``incident_end`` events). The
+notifier keeps them per device in DynamoDB, and for an incident on a CPE
+checks whether the cloud control probe has an open incident for the same
+services at the same time: if it does, the problem is most likely on the
+service's side; if it does not, it is in the access network or the ISP's
+path to the service.
+
+It posts to Slack, when a webhook URL is stored in SSM, only incidents
+worth a message: broad ones (access, home) from their start, narrow ones
+(one service, one client, DNS) once the probe confirms they lasted. An
+incident like one already posted in the last REPEAT_WINDOW_S is not posted
+again, so a condition that comes and goes, or a blocked service that
+reopens after every probe restart, does not repeat. Updates and the end of
+an incident are posted only when its start was.
 """
 
 from __future__ import annotations
@@ -27,6 +35,7 @@ log.setLevel(logging.INFO)
 RETENTION_DAYS = 30
 WEBHOOK_CACHE_SECONDS = 300
 OPEN_MAX_AGE_S = 24 * 3600
+REPEAT_WINDOW_S = 6 * 3600
 
 CAUSES = {
     "access_network": "access network: the ISP hops or most services degraded together",
@@ -146,8 +155,11 @@ def format_message(
             f"{x.get('scope')} incident ({services})"
         )
     icon = ":no_entry:" if x.get("cause") == "tls_blocked" else ":red_circle:"
-    verb = "incident" if name == "incident_start" else "incident update"
-    lines = [f"{icon} *{device}* {verb}: {x.get('scope')} - {services}", f"Likely cause: {cause}"]
+    verb = "incident" if name in ("incident_start", "incident_confirmed") else "incident update"
+    head = f"{icon} *{device}* {verb}: {x.get('scope')} - {services}"
+    if name == "incident_confirmed" and x.get("duration_s"):
+        head += f" (ongoing for {_fmt_duration(int(x['duration_s']))})"
+    lines = [head, f"Likely cause: {cause}"]
     home = x.get("scope") in HOME_SCOPES
     for t in (x.get("targets") or [])[:5]:
         detail = f"{_fmt_ms(t.get('current_ms'))} vs {_fmt_ms(t.get('baseline_ms'))}"
@@ -203,6 +215,50 @@ class Notifier:
             out.update(item.get("services") or [])
         return out
 
+    @staticmethod
+    def signature(x: dict[str, Any]) -> str:
+        """What makes two incidents the same for notifications."""
+        return "|".join([x.get("scope", ""), x.get("cause", ""), ",".join(sorted(x.get("services") or []))])
+
+    def item(self, device: str, incident_id: str) -> dict[str, Any]:
+        resp = self.table.get_item(Key={"device": device, "incident_id": incident_id})
+        return resp.get("Item") or {}
+
+    def recently_posted(self, device: str, x: dict[str, Any]) -> bool:
+        """Whether an incident with the same signature was posted within
+        REPEAT_WINDOW_S."""
+        from boto3.dynamodb.conditions import Attr, Key
+
+        since_ms = int((self.now() - REPEAT_WINDOW_S) * 1000)
+        resp = self.table.query(
+            KeyConditionExpression=Key("device").eq(device),
+            FilterExpression=Attr("signature").eq(self.signature(x))
+            & Attr("notified").eq(True)
+            & Attr("posted_ms").gte(since_ms)
+            & Attr("incident_id").ne(x.get("incident_id", "")),
+        )
+        return bool(resp.get("Items"))
+
+    def mark_posted(self, device: str, incident_id: str) -> None:
+        self.table.update_item(
+            Key={"device": device, "incident_id": incident_id},
+            UpdateExpression="SET notified = :t, posted_ms = :p",
+            ExpressionAttributeValues={":t": True, ":p": int(self.now() * 1000)},
+        )
+
+    def should_post(self, device: str, ev: dict[str, Any]) -> bool:
+        x = ev["extra"]
+        name = x["event"]
+        if name in ("incident_start", "incident_confirmed"):
+            # Probes before confirmation existed send no "confirmed" field;
+            # their starts are posted as before.
+            if name == "incident_start" and x.get("confirmed") is False:
+                return False
+            if self.item(device, x["incident_id"]).get("notified"):
+                return False
+            return not self.recently_posted(device, x)
+        return bool(self.item(device, x["incident_id"]).get("notified"))
+
     def record(self, device: str, ev: dict[str, Any]) -> None:
         x = ev["extra"]
         name = x["event"]
@@ -216,9 +272,23 @@ class Notifier:
                     "scope": x.get("scope", ""),
                     "cause": x.get("cause", ""),
                     "services": list(x.get("services") or []),
+                    "signature": self.signature(x),
+                    "confirmed": x.get("confirmed", True),
                     "started_ms": int(x.get("started_ms") or ev.get("ts_ms") or 0),
                     "ttl": ttl,
                 }
+            )
+        elif name == "incident_confirmed":
+            self.table.update_item(
+                Key=item_key,
+                UpdateExpression="SET confirmed = :c, services = :s, signature = :g, #t = :ttl",
+                ExpressionAttributeNames={"#t": "ttl"},
+                ExpressionAttributeValues={
+                    ":c": True,
+                    ":s": list(x.get("services") or []),
+                    ":g": self.signature(x),
+                    ":ttl": ttl,
+                },
             )
         elif name == "incident_update":
             self.table.update_item(
@@ -253,17 +323,33 @@ class Notifier:
             if x["event"] != "incident_end" and x.get("scope") == "service":
                 control = sorted(self.open_services(self.control) & set(x.get("services") or []))
             url = self.webhook.url()
-            if url and x["event"] == "incident_start" and x.get("scope") == "access" and device in self.device_asn:
+            if (
+                url
+                and x["event"] in ("incident_start", "incident_confirmed")
+                and x.get("scope") == "access"
+                and device in self.device_asn
+            ):
                 note = self.access_note(self.device_asn[device], int(self.now()))
-            text = format_message(device, ev, control, self.grafana, note)
+            post = bool(url) and self.should_post(device, ev)
             log.info(
-                json.dumps({"device": device, "event": x["event"], "id": x.get("incident_id"), "slack": bool(url)})
+                json.dumps(
+                    {
+                        "device": device,
+                        "event": x["event"],
+                        "id": x.get("incident_id"),
+                        "slack": bool(url),
+                        "post": post,
+                    }
+                )
             )
-            if not url:
+            if not post:
                 continue
+            text = format_message(device, ev, control, self.grafana, note)
             try:
                 self.post(url, text)
                 posted += 1
+                if x["event"] in ("incident_start", "incident_confirmed"):
+                    self.mark_posted(device, x["incident_id"])
             except (urllib.error.URLError, TimeoutError) as e:
                 log.warning("slack post failed: %s", e)
         return {"posted": posted}

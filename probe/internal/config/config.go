@@ -283,6 +283,11 @@ type Detect struct {
 	Enabled        bool          `yaml:"enabled"`
 	Warmup         time.Duration `yaml:"warmup"`
 	AccessServices []string      `yaml:"access_services"`
+	// ConfirmAfter is how long an incident of one service, one LAN client
+	// or DNS must last before it is confirmed (incident_confirmed), which
+	// is what the notifier posts. Access and home incidents are confirmed
+	// at once.
+	ConfirmAfter time.Duration `yaml:"confirm_after"`
 }
 
 // Trace configures ICMP traceroutes. One trace runs every Interval, to the
@@ -417,7 +422,8 @@ func Default() Config {
 		STAMP:     STAMP{Interval: time.Second, Timeout: 2 * time.Second, Port: 862},
 		UDP:       UDP{Interval: 5 * time.Second, Timeout: 2 * time.Second},
 		Trace:     Trace{Interval: 30 * time.Second, MaxHops: 24, Probes: 2, Timeout: 2 * time.Second, Gap: 20 * time.Millisecond},
-		Detect:    Detect{Enabled: true, Warmup: 15 * time.Minute, AccessServices: []string{"isp-hop", "isp-gateway"}},
+		Detect: Detect{Enabled: true, Warmup: 15 * time.Minute, AccessServices: []string{"isp-hop", "isp-gateway"},
+			ConfirmAfter: 10 * time.Minute},
 		Discovery: Discovery{
 			Enabled: true, Interval: time.Hour, Timeout: 20 * time.Second,
 			// Istanbul.
@@ -816,6 +822,9 @@ func (c *Config) validateProbes(bad func(string, ...any)) {
 	}
 	if dt := c.Detect; dt.Enabled && (dt.Warmup < 5*time.Minute || dt.Warmup > 6*time.Hour) {
 		bad("detect.warmup must be between 5m and 6h")
+	}
+	if dt := c.Detect; dt.ConfirmAfter < 0 || dt.ConfirmAfter > 2*time.Hour {
+		bad("detect.confirm_after must be between 0 and 2h")
 	}
 	if tr := c.Trace; tr.Interval != 0 {
 		if tr.Interval < 10*time.Second {

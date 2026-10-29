@@ -81,6 +81,11 @@ type Options struct {
 	// per client.
 	HomeMin      int
 	HomeFraction float64
+	// ConfirmAfter is how long a narrow incident (one service, one
+	// client, DNS) must last before an incident_confirmed event marks it
+	// as worth notifying. Access and home incidents are confirmed at
+	// once. Zero confirms every incident at once.
+	ConfirmAfter time.Duration
 }
 
 // ClientContext describes where a LAN client is attached: node, medium,
@@ -92,6 +97,7 @@ func DefaultOptions() Options {
 	return Options{
 		Warmup: 15 * time.Minute, AccessServices: []string{"isp-hop", "isp-gateway"},
 		AccessFraction: 0.3, AccessMin: 3, HomeMin: 2, HomeFraction: 0.5,
+		ConfirmAfter: 10 * time.Minute,
 	}
 }
 
@@ -149,7 +155,13 @@ type Incident struct {
 	// context is, for client and home incidents, where each client was
 	// attached when the incident started.
 	context map[string]map[string]any
+	// confirmed incidents are worth notifying: broad ones from the start,
+	// narrow ones once they lasted Options.ConfirmAfter.
+	confirmed bool
 }
+
+// immediateScopes are confirmed as soon as they start.
+var immediateScopes = []string{"access", "home"}
 
 // Detector consumes samples and reports anomalies and incidents through
 // the samples it returns from Tick.
@@ -522,6 +534,7 @@ func (d *Detector) correlate(now time.Time) []sample.Sample {
 				w.context = d.contexts(members[k])
 				w.Cause = clientCause(w.Scope, w.context)
 			}
+			w.confirmed = d.opt.ConfirmAfter == 0 || slices.Contains(immediateScopes, w.Scope)
 			d.incidents[k] = w
 			out = append(out, d.incidentEvent(w, "incident_start", members[k], now))
 		case w != nil:
@@ -532,6 +545,11 @@ func (d *Detector) correlate(now time.Time) []sample.Sample {
 					cur.context = d.contexts(members[k])
 					cur.Cause = clientCause(cur.Scope, cur.context)
 				}
+			}
+			if !cur.confirmed && now.Sub(cur.Started) >= d.opt.ConfirmAfter {
+				cur.confirmed, cur.services, cur.lastSent = true, svcs, now
+				out = append(out, d.incidentEvent(cur, "incident_confirmed", members[k], now))
+				continue
 			}
 			if !slices.Equal(svcs, cur.services) && now.Sub(cur.lastSent) >= updateEvery {
 				cur.services, cur.lastSent = svcs, now
@@ -679,9 +697,9 @@ const maxTargetsInEvent = 12
 func (d *Detector) incidentEvent(inc *Incident, event string, ss []*series, now time.Time) sample.Sample {
 	x := map[string]any{
 		"event": event, "incident_id": inc.ID, "scope": inc.Scope, "cause": inc.Cause,
-		"services": inc.services, "started_ms": inc.Started.UnixMilli(),
+		"services": inc.services, "started_ms": inc.Started.UnixMilli(), "confirmed": inc.confirmed,
 	}
-	if event == "incident_end" {
+	if event == "incident_end" || event == "incident_confirmed" {
 		x["duration_s"] = int64(now.Sub(inc.Started).Seconds())
 	}
 	if len(ss) > 0 {

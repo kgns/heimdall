@@ -301,12 +301,23 @@ incident covers them. The cause comes from where the clients are attached:
 Client and home incidents carry each client's context (node, band, signal,
 retries, radio busy share) and link to the LAN clients dashboard.
 
+Narrow incidents (one service, one client, DNS) are often blips of a few
+minutes. The probe marks an incident as confirmed with an
+`incident_confirmed` event once it has lasted `detect.confirm_after` (10
+minutes); access and home incidents are confirmed at their start. Every
+incident event carries `confirmed`.
+
 The ingest Lambda passes incident events to `heimdall-notifier`
-(`terraform/notify.tf`). The notifier keeps open incidents in the DynamoDB
+(`terraform/notify.tf`). The notifier keeps incidents in the DynamoDB
 table `heimdall-incidents`. For a single-service incident on the CPE, it
 checks whether the AWS control probe has the same service open, which tells
 whether the problem is on the service's side or on the ISP's path. It posts
-to Slack once the webhook URL is stored:
+only confirmed incidents, and their updates and ends. It skips an incident
+with the same scope, cause and services as one posted in the last six
+hours, so a condition that keeps coming back, or a blocked service that
+reopens after each probe restart, is posted once. Every incident, posted
+or not, stays in the table and in the samples. The notifier posts to Slack
+once the webhook URL is stored:
 
 ```sh
 aws ssm put-parameter --profile kgns --region eu-central-1 --type SecureString \

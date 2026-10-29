@@ -94,6 +94,7 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		opt := detect.DefaultOptions()
 		opt.Warmup = cfg.Detect.Warmup
 		opt.AccessServices = cfg.Detect.AccessServices
+		opt.ConfirmAfter = cfg.Detect.ConfirmAfter
 		det = detect.New(opt)
 		sinks = append(sinks, det)
 	}

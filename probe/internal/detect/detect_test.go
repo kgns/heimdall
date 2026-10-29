@@ -307,3 +307,50 @@ func TestClientCause(t *testing.T) {
 		}
 	}
 }
+
+func TestIncidentConfirmation(t *testing.T) {
+	d := New(DefaultOptions())
+	a := icmp("netflix/www.netflix.com", "netflix", "streaming", 20)
+	b := icmp("youtube/www.youtube.com", "youtube", "streaming", 15)
+	run(d, 0, 30, a, b)
+	slow := a
+	slow.rtt = 80
+
+	// A short blip starts and ends unconfirmed: nothing to notify.
+	ev := run(d, 30, 34, slow, b)
+	ev2 := run(d, 34, 45, a, b)
+	if len(ev["incident_start"]) != 1 || ev["incident_start"][0].Extra["confirmed"] != false {
+		t.Fatalf("start %v", ev["incident_start"])
+	}
+	if len(ev2["incident_end"]) != 1 || ev2["incident_end"][0].Extra["confirmed"] != false || len(ev2["incident_confirmed"]) != 0 {
+		t.Fatalf("blip %v", ev2)
+	}
+
+	// A lasting one is confirmed once, ConfirmAfter after its start, and
+	// its end is confirmed too.
+	ev = run(d, 45, 70, slow, b)
+	if len(ev["incident_confirmed"]) != 1 {
+		t.Fatalf("no confirmation: %v", ev)
+	}
+	c := ev["incident_confirmed"][0]
+	started := time.UnixMilli(c.Extra["started_ms"].(int64))
+	if got := time.UnixMilli(c.TS).Sub(started); got < 10*time.Minute || got > 11*time.Minute {
+		t.Fatalf("confirmed after %v", got)
+	}
+	ev = run(d, 70, 80, a, b)
+	if len(ev["incident_end"]) != 1 || ev["incident_end"][0].Extra["confirmed"] != true {
+		t.Fatalf("end %v", ev["incident_end"])
+	}
+}
+
+func TestAccessIncidentConfirmedAtOnce(t *testing.T) {
+	d := New(DefaultOptions())
+	hop := icmp("isp-hop2", "isp-hop", "infra", 4)
+	run(d, 0, 30, hop)
+	slow := hop
+	slow.rtt = 40
+	ev := run(d, 30, 34, slow)
+	if len(ev["incident_start"]) != 1 || ev["incident_start"][0].Extra["confirmed"] != true {
+		t.Fatalf("%v", ev["incident_start"])
+	}
+}

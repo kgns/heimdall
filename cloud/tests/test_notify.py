@@ -69,7 +69,8 @@ def test_incident_lifecycle_and_control(aws):
     n({"device": "aws-euc1", "events": [ev("incident_end", incident_id="c1", duration_s=300)]})
     # An incident the control left open two days ago does not count.
     n({"device": "aws-euc1", "events": [ev("incident_start", incident_id="c0", started_ms=1_792_840_000_000)]})
-    n({"device": "ex7501-home", "events": [ev("incident_start", incident_id="i3")]})
+    # Another cause, so not a repeat of i2.
+    n({"device": "ex7501-home", "events": [ev("incident_start", incident_id="i3", cause="destination_change")]})
     assert "normal from eu-central-1" in posts[-1][1]
 
     n({"device": "ex7501-home", "events": [ev("incident_end", incident_id="i3", duration_s=420)]})
@@ -161,3 +162,41 @@ def test_format_client_incident():
     assert "flow/aaa: LAN part of its connections 40 ms vs 3 ms" in text
     assert "- client aaa: cpe, 5GHz, -80 dBm, 52 Mbit/s" in text
     assert "AWS control" not in text and text.endswith("https://g/d/heimdall-clients")
+
+
+def test_only_confirmed_incidents_are_posted(aws):
+    table, ssm = aws
+    ssm.put_parameter(Name=WEBHOOK, Type="SecureString", Value="https://hooks.slack.com/services/T/B/x")
+    posts = []
+    n = notifier(table, ssm, posts)
+    home = "ex7501-home"
+
+    # A short blip: started and ended unconfirmed, never posted.
+    n({"device": home, "events": [ev("incident_start", incident_id="b1", confirmed=False)]})
+    n({"device": home, "events": [ev("incident_end", incident_id="b1", confirmed=False, duration_s=180)]})
+    assert posts == []
+    assert table.get_item(Key={"device": home, "incident_id": "b1"})["Item"]["status"] == "closed"
+
+    # A lasting one is posted when confirmed, with its update and end.
+    n({"device": home, "events": [ev("incident_start", incident_id="l1", confirmed=False)]})
+    n({"device": home, "events": [ev("incident_confirmed", incident_id="l1", confirmed=True, duration_s=600)]})
+    assert len(posts) == 1 and "ongoing for 10m" in posts[0][1]
+    n({"device": home, "events": [ev("incident_update", incident_id="l1", confirmed=True, services=["netflix", "x"])]})
+    n({"device": home, "events": [ev("incident_end", incident_id="l1", confirmed=True, duration_s=1500)]})
+    assert len(posts) == 3 and "resolved after 25m" in posts[-1][1]
+
+    # The same condition again within the repeat window: recorded, not posted,
+    # and neither is its end.
+    n({"device": home, "events": [ev("incident_start", incident_id="l2", confirmed=False)]})
+    n({"device": home, "events": [ev("incident_confirmed", incident_id="l2", confirmed=True, duration_s=600)]})
+    n({"device": home, "events": [ev("incident_end", incident_id="l2", confirmed=True, duration_s=900)]})
+    assert len(posts) == 3
+
+    # Broad incidents are confirmed at the start and posted at once.
+    n(
+        {
+            "device": home,
+            "events": [ev("incident_start", incident_id="a1", scope="access", cause="access_network", confirmed=True)],
+        }
+    )
+    assert len(posts) == 4 and "access" in posts[-1][1]

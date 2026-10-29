@@ -64,6 +64,10 @@ detect:
   enabled: true
   warmup: 15m
   access_services: [isp-hop, isp-gateway]
+  # Incidents of one service, one LAN client or DNS are confirmed, and
+  # only then posted to Slack, once they lasted this long; access and home
+  # incidents are confirmed at once.
+  confirm_after: 10m
 
 # Discoverers named in the catalog find the servers a service really uses:
 # the YouTube and Netflix caches this line is mapped to, the nearest Steam
