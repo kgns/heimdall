@@ -144,7 +144,7 @@ func TestDNSProbes(t *testing.T) {
 	cfg.DNS.DoH = nil
 	cfg.DNS.Identity.Names = []string{"o-o.myaddr.l.google.com"}
 	e, mem := testEnv(t, cfg)
-	d := newDNSProbes(e, fsys, func(netip.Addr) bool { return true })
+	d := newDNSProbes(e, fsys, func(netip.Addr) bool { return true }, nil)
 	defer d.close()
 
 	ids := dnsLayerIDs(d.layers)
@@ -234,7 +234,7 @@ func TestDNSIdentityZone(t *testing.T) {
 	cfg.DNS.Identity.Names = []string{"o-o.myaddr.l.google.com"}
 	cfg.DNS.Identity.Zone = "w.example.net"
 	e, mem := testEnv(t, cfg)
-	d := newDNSProbes(e, fsys, func(netip.Addr) bool { return true })
+	d := newDNSProbes(e, fsys, func(netip.Addr) bool { return true }, nil)
 	defer d.close()
 	if len(d.identity) != 2 || d.identity[0].id != "dns/identity/w.example.net" {
 		t.Fatalf("identity layers %+v", d.identity)
@@ -314,7 +314,7 @@ func TestDNSProbesWithoutForwarder(t *testing.T) {
 	cfg := config.Default()
 	cfg.DNS.DoH = nil
 	e, _ := testEnv(t, cfg)
-	d := newDNSProbes(e, fsys, func(netip.Addr) bool { return true })
+	d := newDNSProbes(e, fsys, func(netip.Addr) bool { return true }, nil)
 	if ids := dnsLayerIDs(d.layers); len(ids) != 1 || ids[0] != "dns/system/127.0.0.53:53" {
 		t.Fatalf("layers %v", ids)
 	}
@@ -324,7 +324,7 @@ func TestDNSProbesWithoutForwarder(t *testing.T) {
 
 	cfg.DNS.Enabled = false
 	e, _ = testEnv(t, cfg)
-	if d := newDNSProbes(e, fsys, func(netip.Addr) bool { return true }); len(d.layers)+len(d.identity) != 0 {
+	if d := newDNSProbes(e, fsys, func(netip.Addr) bool { return true }, nil); len(d.layers)+len(d.identity) != 0 {
 		t.Fatal("disabled DNS probes still configured")
 	}
 }
@@ -335,7 +335,7 @@ func TestDNSProbesSkipGuardedServers(t *testing.T) {
 	cfg.DNS.DoH = []config.DoHServer{{ID: "blocked", URL: "https://dns.example.com/dns-query", IP: "62.58.244.21"}}
 	e, _ := testEnv(t, cfg)
 	blocked := netip.MustParsePrefix("62.58.244.16/29")
-	d := newDNSProbes(e, fsys, func(a netip.Addr) bool { return !blocked.Contains(a) })
+	d := newDNSProbes(e, fsys, func(a netip.Addr) bool { return !blocked.Contains(a) }, nil)
 	if ids := dnsLayerIDs(d.layers); fmt.Sprint(ids) != "[dns/local/127.0.0.1:53 dns/upstream/127.0.0.1:5300]" {
 		t.Fatalf("layers %v", ids)
 	}

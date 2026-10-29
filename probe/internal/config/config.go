@@ -45,7 +45,31 @@ type Config struct {
 	NetWatch    NetWatch    `yaml:"netwatch"`
 	Collectors  Collectors  `yaml:"collectors"`
 	Upload      Upload      `yaml:"upload"`
+	Resolver    Resolver    `yaml:"resolver"`
 }
+
+// Resolver selects how the probe resolves the hostnames it measures.
+//
+// In "system" mode it uses the CPE's own resolver, the path LAN clients
+// use. In "isp" mode it queries the ISP's resolvers directly, so that the
+// servers it measures are the ones the ISP's DNS hands its customers, and
+// a DNS service the user chose (a privacy resolver, a filtering service)
+// does not move the measurements to other servers. The ISP's resolvers are
+// read from ISPFiles (resolv.conf format, written by the PPP or DHCP client
+// on many CPEs), falling back to ISPServers. The user's own DNS path is
+// still measured by the dns probes.
+type Resolver struct {
+	Mode       string        `yaml:"mode"`
+	ISPFiles   []string      `yaml:"isp_files"`
+	ISPServers []string      `yaml:"isp_servers"`
+	Timeout    time.Duration `yaml:"timeout"`
+}
+
+// Resolver modes.
+const (
+	ResolverSystem = "system"
+	ResolverISP    = "isp"
+)
 
 // Upload sends samples to the ingest API.
 type Upload struct {
@@ -427,6 +451,10 @@ func Default() Config {
 			Processes: Processes{Interval: 30 * time.Second, Names: []string{"dnsmasq", "dnscrypt-proxy"}},
 			Clock:     Clock{Interval: time.Minute, Server: "time.cloudflare.com", Timeout: 3 * time.Second},
 		},
+		Resolver: Resolver{
+			Mode: ResolverSystem, Timeout: 2 * time.Second,
+			ISPFiles: []string{"/etc/ppp/resolv.conf", "/var/run/ppp/resolv.conf", "/tmp/resolv.conf.ppp", "/tmp/resolv.conf.auto"},
+		},
 		Upload: Upload{
 			TokenFile: "/misc/heimdall/upload.token", Interval: 10 * time.Second, Timeout: 15 * time.Second,
 			Buffer: 16 * MiB, MaxBatch: 2000, MaxBatchBytes: 3 * MiB, Heartbeat: time.Minute,
@@ -534,6 +562,14 @@ func (c *Config) ProbeRate() float64 {
 		}
 		if d.UncachedZone != "" {
 			layers++
+		}
+		if c.Resolver.Mode == ResolverISP {
+			// One layer per ISP resolver, two assumed when they are
+			// discovered at runtime, and the uncached one.
+			layers += max(len(c.Resolver.ISPServers), assumedUpstreams)
+			if d.UncachedZone != "" {
+				layers++
+			}
 		}
 		r += float64(layers) / d.Interval.Seconds()
 		if d.Identity.Interval > 0 {
@@ -717,6 +753,25 @@ func (c *Config) Validate() error {
 	}
 	c.validateCollectors(bad)
 	c.validateUpload(bad)
+	switch r := c.Resolver; r.Mode {
+	case ResolverSystem:
+	case ResolverISP:
+		if len(r.ISPFiles) == 0 && len(r.ISPServers) == 0 {
+			bad("resolver: isp mode needs isp_files or isp_servers")
+		}
+		for _, s := range r.ISPServers {
+			// ISP resolvers may have private addresses inside the ISP's
+			// network; the route guard keeps out LAN addresses.
+			if a, err := netip.ParseAddr(s); err != nil || !a.Is4() || !a.IsGlobalUnicast() {
+				bad("resolver.isp_servers: %q is not a unicast IPv4 address", s)
+			}
+		}
+		if r.Timeout <= 0 || r.Timeout > 10*time.Second {
+			bad("resolver.timeout must be in (0, 10s]")
+		}
+	default:
+		bad("resolver.mode %q: want %s or %s", r.Mode, ResolverSystem, ResolverISP)
+	}
 	if c.SelfMetrics.Interval < time.Second {
 		bad("self_metrics.interval must be at least 1s")
 	}

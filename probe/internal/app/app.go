@@ -161,7 +161,29 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		ua = "heimdall-probe/" + version + " (latency measurement)"
 	}
 	e := &env{cfg: cfg, rec: rec, pinger: pinger, log: log, userAgent: ua}
-	dnsProbes := newDNSProbes(e, h.FS, nw.Allowed)
+
+	// lookup resolves the hostnames that are measured; in isp mode it
+	// bypasses the CPE's resolver.
+	lookup := h.Lookup
+	resolverMode := config.ResolverSystem
+	var ispRes *resolve.ServerResolver
+	if cfg.Resolver.Mode == config.ResolverISP {
+		servers, source := ispResolvers(h.FS, cfg.Resolver, nw.Allowed)
+		if len(servers) == 0 {
+			log.Warn("no ISP resolver found; resolving through the CPE's resolver", "files", cfg.Resolver.ISPFiles)
+			rec.Emit(sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, Category: "infra", Service: "dns",
+				Extra: map[string]any{"event": "resolver_unavailable", "mode": config.ResolverISP}})
+		} else {
+			ispRes = resolve.NewServerResolver(servers, cfg.Resolver.Timeout)
+			lookup, resolverMode = ispRes.Lookup, config.ResolverISP
+			log.Info("resolving through the ISP's resolvers", "servers", servers, "source", source)
+		}
+	}
+	var ispServers []netip.AddrPort
+	if ispRes != nil {
+		ispServers = ispRes.Servers()
+	}
+	dnsProbes := newDNSProbes(e, h.FS, nw.Allowed, ispServers)
 	defer dnsProbes.close()
 	// Learn the resolver identity before the first resolution, so that the
 	// initial dst_change events already carry it.
@@ -169,8 +191,11 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		dnsProbes.probeIdentity(ctx, l)
 	}
 
-	res := resolve.New(h.Lookup, nw.Allowed, rec.Emit, log, cfg.Catalog.ResolveTimeout)
+	res := resolve.New(lookup, nw.Allowed, rec.Emit, log, cfg.Catalog.ResolveTimeout)
 	res.ResolverID = dnsProbes.ResolverID
+	if ispRes != nil {
+		res.ResolverID = ispRes.Last
+	}
 	if len(hostTargets) > 0 {
 		start := time.Now()
 		res.RefreshAll(ctx, hostTargets, 4)
@@ -261,7 +286,7 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		}
 	}
 	if cfg.Discovery.Enabled {
-		disc := newDiscovery(e, targets, h.Lookup, nw.Allowed, discoveryArgs)
+		disc := newDiscovery(e, targets, lookup, nw.Allowed, discoveryArgs)
 		for _, j := range disc.jobs() {
 			sched.Add(j)
 			jobCounts["discovery"]++
@@ -278,7 +303,7 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 			leaseFile = dm.LeaseFile
 		}
 	}
-	coll := newCollectors(e, h.FS, nw, h.Lookup, leaseFile)
+	coll := newCollectors(e, h.FS, nw, lookup, leaseFile)
 	if det != nil {
 		det.SetClientContext(coll.clientContext)
 	}
@@ -314,7 +339,7 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 			Interval: cfg.Upload.Interval, Timeout: cfg.Upload.Timeout,
 			MaxBatch: cfg.Upload.MaxBatch, MaxBatchBytes: int(cfg.Upload.MaxBatchBytes),
 			MinBackoff: 5 * time.Second, MaxBackoff: 5 * time.Minute,
-			ClockOffset: coll.MeasuredClockOffset, Allowed: nw.Allowed, Lookup: h.Lookup,
+			ClockOffset: coll.MeasuredClockOffset, Allowed: nw.Allowed, Lookup: resolve.WithFallback(lookup, h.Lookup),
 			HTTPClient: h.UploadClient, Log: log, DrainAfterStop: cfg.Upload.DrainOnStop,
 		})
 		if err != nil {
@@ -324,14 +349,15 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 			Name: "heartbeat", Interval: cfg.Upload.Heartbeat, NoJitter: true,
 			Run: func(context.Context) {
 				rec.Emit(sample.Sample{Kind: sample.KindHeartbeat, Status: sample.StatusOK, Extra: map[string]any{
-					"version":     version,
-					"run_id":      up.RunID(),
-					"uptime_s":    int64(h.Now().Sub(started).Seconds()),
-					"upload":      up.Status(),
-					"buffer":      upBuf.Stats(),
-					"resolver_id": dnsProbes.ResolverID(),
-					"lan_clients": coll.LANClients(),
-					"incidents":   activeIncidents(det),
+					"version":       version,
+					"run_id":        up.RunID(),
+					"uptime_s":      int64(h.Now().Sub(started).Seconds()),
+					"upload":        up.Status(),
+					"buffer":        upBuf.Stats(),
+					"resolver_id":   dnsProbes.ResolverID(),
+					"resolver_mode": resolverMode,
+					"lan_clients":   coll.LANClients(),
+					"incidents":     activeIncidents(det),
 				}})
 			},
 		})
@@ -368,28 +394,30 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 	})
 
 	rec.Emit(sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK, Extra: map[string]any{
-		"event":        "start",
-		"version":      version,
-		"goos":         runtime.GOOS,
-		"goarch":       runtime.GOARCH,
-		"icmp_mode":    string(pinger.Mode()),
-		"targets":      len(targets),
-		"host_targets": len(hostTargets),
-		"jobs":         jobCounts,
-		"dns_layers":   dnsLayerIDs(dnsProbes.layers),
-		"lan_clients":  coll.LANClients(),
-		"resolver_id":  dnsProbes.ResolverID(),
-		"regions":      cfg.Catalog.Regions,
-		"probe_rate":   cfg.ProbeRate(),
-		"wan_iface":    wan.Iface,
-		"gateway":      addrString(wan.Gateway),
-		"wan_ipv4":     addrStrings(wan.WANIPv4),
-		"run_id":       runID,
-		"upload":       cfg.Upload.Enabled,
+		"event":         "start",
+		"version":       version,
+		"goos":          runtime.GOOS,
+		"goarch":        runtime.GOARCH,
+		"icmp_mode":     string(pinger.Mode()),
+		"targets":       len(targets),
+		"host_targets":  len(hostTargets),
+		"jobs":          jobCounts,
+		"dns_layers":    dnsLayerIDs(dnsProbes.layers),
+		"lan_clients":   coll.LANClients(),
+		"resolver_id":   dnsProbes.ResolverID(),
+		"regions":       cfg.Catalog.Regions,
+		"probe_rate":    cfg.ProbeRate(),
+		"wan_iface":     wan.Iface,
+		"gateway":       addrString(wan.Gateway),
+		"wan_ipv4":      addrStrings(wan.WANIPv4),
+		"run_id":        runID,
+		"upload":        cfg.Upload.Enabled,
+		"resolver_mode": resolverMode,
+		"isp_resolvers": addrPortStrings(ispServers),
 	}})
 	log.Info("probe started", "device", device, "version", version, "icmp_mode", pinger.Mode(),
 		"targets", len(targets), "jobs", jobCounts, "probe_rate", cfg.ProbeRate(),
-		"wan_iface", wan.Iface, "gateway", wan.Gateway, "resolver", dnsProbes.ResolverID(),
+		"wan_iface", wan.Iface, "gateway", wan.Gateway, "resolver", dnsProbes.ResolverID(), "resolver_mode", resolverMode,
 		"upload", cfg.Upload.Enabled, "run_id", runID)
 
 	// The uploader outlives the scheduler so that the stop event is sent.
@@ -548,4 +576,45 @@ func addrStrings(as []netip.Addr) []string {
 		out[i] = a.String()
 	}
 	return out
+}
+
+func addrPortStrings(as []netip.AddrPort) []string {
+	out := make([]string, len(as))
+	for i, a := range as {
+		out[i] = a.Addr().String()
+	}
+	return out
+}
+
+// ispResolvers returns the ISP's resolvers: from the first of r.ISPFiles
+// that names usable IPv4 servers, else r.ISPServers. A server must be
+// reached through the WAN (allowed, the route guard), which leaves out the
+// CPE's own forwarder and LAN addresses; ISP resolvers may have private
+// addresses inside the ISP's network. source tells where they came from.
+func ispResolvers(fsys fs.FS, r config.Resolver, allowed func(netip.Addr) bool) (servers []netip.AddrPort, source string) {
+	usable := func(as []netip.Addr) []netip.AddrPort {
+		var out []netip.AddrPort
+		for _, a := range as {
+			if a.Is4() && a.IsGlobalUnicast() && allowed(a) {
+				out = append(out, netip.AddrPortFrom(a, 53))
+			}
+		}
+		return out
+	}
+	for _, f := range r.ISPFiles {
+		as, err := sysinfo.ReadResolvConf(fsys, f)
+		if err != nil {
+			continue
+		}
+		if out := usable(as); len(out) > 0 {
+			return out, f
+		}
+	}
+	var as []netip.Addr
+	for _, s := range r.ISPServers {
+		if a, err := netip.ParseAddr(s); err == nil {
+			as = append(as, a)
+		}
+	}
+	return usable(as), "config"
 }

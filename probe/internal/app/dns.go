@@ -26,6 +26,10 @@ const (
 	layerUncached = "uncached" // full path, cache-busting name
 	layerDoH      = "doh"      // public resolvers reached directly over HTTPS
 	layerIdentity = "identity" // whoami names that reveal the egress resolver
+	// layerISP and layerISPUncached query the ISP's resolvers directly,
+	// whatever DNS the user configured on the CPE.
+	layerISP         = "isp"
+	layerISPUncached = "isp_uncached"
 )
 
 // dnsLayer is one place a DNS query can be sent.
@@ -57,8 +61,9 @@ type dnsProbes struct {
 }
 
 // newDNSProbes discovers the layers from the forwarder's configuration.
-// allowed is the route guard for directly contacted servers.
-func newDNSProbes(e *env, fsys fs.FS, allowed func(netip.Addr) bool) *dnsProbes {
+// allowed is the route guard for directly contacted servers; isp are the
+// ISP's resolvers, measured as layers of their own.
+func newDNSProbes(e *env, fsys fs.FS, allowed func(netip.Addr) bool, isp []netip.AddrPort) *dnsProbes {
 	d := &dnsProbes{env: e, names: map[string]int{}}
 	c := e.cfg.DNS
 	if !c.Enabled {
@@ -91,6 +96,13 @@ func newDNSProbes(e *env, fsys fs.FS, allowed func(netip.Addr) bool) *dnsProbes 
 			d.layers = append(d.layers, dnsLayer{id: "dns/upstream/" + u.Addr.String(), layer: layerUpstream, server: u.Addr, ex: dnsp.Plain{Server: u.Addr}, viaSystemPath: true})
 		}
 	}
+	for _, ap := range isp {
+		d.layers = append(d.layers, dnsLayer{id: "dns/isp/" + ap.String(), layer: layerISP, server: ap, ex: dnsp.Plain{Server: ap}})
+	}
+	if c.UncachedZone != "" && len(isp) > 0 {
+		d.layers = append(d.layers, dnsLayer{id: "dns/isp-uncached/" + c.UncachedZone, layer: layerISPUncached,
+			server: isp[0], ex: dnsp.Plain{Server: isp[0]}, random: c.UncachedZone})
+	}
 	if c.UncachedZone != "" && len(entry) > 0 {
 		l := entry[0]
 		l.id, l.layer, l.random = "dns/uncached/"+c.UncachedZone, layerUncached, c.UncachedZone
@@ -116,6 +128,13 @@ func newDNSProbes(e *env, fsys fs.FS, allowed func(netip.Addr) bool) *dnsProbes 
 		l.id, l.layer, l.random = "dns/identity/"+c.Identity.Zone, layerIdentity, c.Identity.Zone
 		d.identity = append(d.identity, l)
 		d.identityZone = true
+	}
+	// The ISP resolver's own identity shows its egress address and whether
+	// it forwards the client subnet. It never sets the system path's
+	// identity.
+	if len(isp) > 0 && c.Identity.Zone != "" {
+		d.identity = append(d.identity, dnsLayer{id: "dns/identity/isp/" + isp[0].Addr().String(), layer: layerISP,
+			server: isp[0], ex: dnsp.Plain{Server: isp[0]}, random: c.Identity.Zone})
 	}
 	if len(entry) > 0 {
 		for _, n := range c.Identity.Names {
@@ -213,12 +232,15 @@ func (d *dnsProbes) probeIdentity(ctx context.Context, l dnsLayer) {
 			// labels are never cached.
 			fresh := l.random != "" || r.RTT >= freshIdentityRTT
 			s.Extra["fresh"] = fresh
-			if fresh && (l.random != "" || !d.identityZone) {
+			if l.layer == layerIdentity && fresh && (l.random != "" || !d.identityZone) {
 				d.setResolver(id.Resolver.String(), l.id[len("dns/identity/"):])
 			}
 		}
 	}
 	s.ResolverID = d.ResolverID()
+	if l.layer == layerISP {
+		s.ResolverID = l.server.Addr().String()
+	}
 	d.rec.Emit(s)
 }
 
@@ -256,6 +278,9 @@ func (d *dnsProbes) sample(l dnsLayer, name string, r dnsp.Result) sample.Sample
 	}
 	if l.viaSystemPath && l.layer != layerIdentity {
 		s.ResolverID = d.ResolverID()
+	}
+	if l.layer == layerISP || l.layer == layerISPUncached {
+		s.ResolverID = l.server.Addr().String()
 	}
 	x := map[string]any{"layer": l.layer, "qname": name}
 	if r.Rcode != "" {

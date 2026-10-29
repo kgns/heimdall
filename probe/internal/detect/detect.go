@@ -273,7 +273,7 @@ func (d *Detector) Close() error { return nil }
 // latency depends on which resolver of a rotating pool answered.
 func dnsLayerSkipped(s *sample.Sample) bool {
 	l, _ := s.Extra["layer"].(string)
-	return l == "identity" || l == "uncached"
+	return l == "identity" || l == "uncached" || l == "isp_uncached"
 }
 
 // Tick closes the current minute, re-evaluates every series and returns

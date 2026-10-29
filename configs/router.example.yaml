@@ -203,6 +203,20 @@ collectors:
     server: time.cloudflare.com
     timeout: 3s
 
+# How measured hostnames are resolved. system: through the CPE's resolver,
+# as LAN clients do. isp: straight through the ISP's resolvers, so that a
+# DNS service the user chose (a privacy or filtering resolver) does not
+# move the measurements to other servers; the user's DNS path is still
+# measured by the dns probes, and the ISP's resolvers get dns layers
+# (isp, isp_uncached) and an identity probe of their own. The resolvers
+# come from the first isp_files entry that names servers reached through
+# the WAN, else from isp_servers. Uploads fall back to the CPE's resolver.
+resolver:
+  mode: system
+  isp_files: [/etc/ppp/resolv.conf, /var/run/ppp/resolv.conf, /tmp/resolv.conf.ppp, /tmp/resolv.conf.auto]
+  isp_servers: []
+  timeout: 2s
+
 self_metrics:
   interval: 60s
 

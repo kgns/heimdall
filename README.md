@@ -63,6 +63,16 @@ heimdall-probe check -config /misc/heimdall/config.yaml -resolve
 resolves every host once and shows the chosen address, the number of
 answers and the lookup time, and flags addresses the route guard blocks.
 
+With `resolver.mode: isp` the probe resolves through the ISP's resolvers
+directly instead of the CPE's resolver. A DNS service the user chose, such
+as a privacy resolver without the user's location, makes CDNs pick distant
+servers; the ISP's view of its service should not depend on that. The
+user's own DNS path is still measured as `dns` layers, next to `isp` and
+`isp_uncached` layers for the ISP's resolvers. Their addresses come from
+the PPP or DHCP client's resolv.conf where the CPE writes one
+(`resolver.isp_files`), else from `resolver.isp_servers`; `start` and
+`heartbeat` samples carry `resolver_mode`.
+
 ## Measurements
 
 Catalog services are measured three ways on the same address unless they
