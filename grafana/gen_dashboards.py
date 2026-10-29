@@ -31,6 +31,19 @@ BUCKET = "CAST(from_unixtime((ts_ms / $__interval_ms) * $__interval_ms / 1000.0)
 RANGE_ALL = (
     "dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to}"
 )
+# The selected CPE and its extender probe together.
+RANGE_SITE = (
+    "device IN ('$device', '$ext')"
+    " AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd')"
+    " AND ts_ms BETWEEN ${__from} AND ${__to}"
+)
+# The range of the extender probe of the selected CPE ($ext, "none" when
+# it has none).
+RANGE_EXT = (
+    "device = '$ext'"
+    " AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd')"
+    " AND ts_ms BETWEEN ${__from} AND ${__to}"
+)
 CLOUD_DEVICE = "aws-euc1"
 # Services measured from the CPE; infra (ISP hops, resolvers, CPE counters)
 # and home (LAN clients) have their own dashboard.
@@ -48,7 +61,16 @@ def sql(text: str, **subs: str) -> str:
         text = text.replace("{FLOWS}", FLOWS).replace("{M}", MATCHED)
     if "{D}" in text or "{ASN}" in text:
         text = text.replace("{D}", DAYS).replace("{ASN}", AS_NAMES)
-    subs = {"RA": RANGE_ALL, "R": RANGE, "B": BUCKET, "S": SERVICES, "CLOUD": CLOUD_DEVICE, **subs}
+    subs = {
+        "RA": RANGE_ALL,
+        "RE": RANGE_EXT,
+        "RS": RANGE_SITE,
+        "R": RANGE,
+        "B": BUCKET,
+        "S": SERVICES,
+        "CLOUD": CLOUD_DEVICE,
+        **subs,
+    }
     for k, v in subs.items():
         text = text.replace("{" + k + "}", v)
     return " ".join(text.split())
@@ -171,6 +193,14 @@ LAN_DEVICE = var(
     "device",
     "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'lan'",
 )
+# The probe on the CPE's mesh extender, which names the CPE as its site in
+# its heartbeat, or "none". The topology takes one extender per home.
+EXT = var(
+    "ext",
+    "SELECT coalesce(max(device), 'none') AS ext FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd')"
+    " AND kind = 'heartbeat' AND device NOT IN ('$device', '{CLOUD}') AND json_extract_scalar(extra, '$.site') = '$device'",
+)
+EXT["hide"] = 2
 CATEGORY = var(
     "category",
     "SELECT DISTINCT category FROM heimdall.samples WHERE device = '$device'"
@@ -1470,7 +1500,12 @@ def clients() -> dict[str, Any]:
 # Clients that opened no connection still appear through their pings. The
 # mesh extenders themselves answer pings like clients and are left out; x
 # lists the extenders from the mesh topology and any a client was seen
-# behind. Queries are collapsed onto one line, so they hold no SQL comments.
+# behind. The extender's own probe ($ext) adds, for its clients, the hop
+# between the extender and the client (e: the client's part of the
+# handshakes the extender bridges) and the signal the extender receives
+# (ew); the CPE's LAN figure minus the hop is the backhaul and the
+# extender. Queries are collapsed onto one line, so they hold no SQL
+# comments.
 TOPO_CLIENTS = """
 f AS (
   SELECT ts_ms, json_extract_scalar(extra, '$.client') AS client,
@@ -1484,10 +1519,35 @@ f AS (
 fc AS (
   SELECT client, max_by(node, ts_ms) AS node, max_by(medium, ts_ms) AS medium, max_by(band, ts_ms) AS band,
     max_by(name, ts_ms) AS name, count(*) AS flows,
+    count(lan) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lann,
     approx_percentile(lan, 0.5) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan50,
     approx_percentile(lan, 0.9) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan90,
     approx_percentile(wan, 0.5) FILTER (WHERE status = 'ok') AS wan50
   FROM f GROUP BY 1
+),
+e AS (
+  SELECT json_extract_scalar(extra, '$.client') AS client,
+    max_by(json_extract_scalar(extra, '$.node'), ts_ms) AS node,
+    max_by(json_extract_scalar(extra, '$.medium'), ts_ms) AS medium,
+    max_by(json_extract_scalar(extra, '$.band'), ts_ms) AS band,
+    count(*) FILTER (WHERE json_extract_scalar(extra, '$.lan_ms') IS NOT NULL
+      AND json_extract_scalar(extra, '$.proto') = 'tcp' AND status = 'ok') AS hopn,
+    approx_percentile(CAST(json_extract_scalar(extra, '$.lan_ms') AS double), 0.5)
+      FILTER (WHERE json_extract_scalar(extra, '$.proto') = 'tcp' AND status = 'ok') AS hop50,
+    approx_percentile(CAST(json_extract_scalar(extra, '$.lan_ms') AS double), 0.9)
+      FILTER (WHERE json_extract_scalar(extra, '$.proto') = 'tcp' AND status = 'ok') AS hop90
+  FROM heimdall.samples WHERE {RE} AND kind = 'flow' GROUP BY 1
+),
+ew AS (
+  SELECT json_extract_scalar(extra, '$.client') AS client,
+    max_by(json_extract_scalar(extra, '$.node'), ts_ms) AS node,
+    max_by(json_extract_scalar(extra, '$.band'), ts_ms) AS band,
+    avg(CAST(json_extract_scalar(extra, '$.rssi') AS double)) AS rssi
+  FROM heimdall.samples WHERE {RE} AND kind = 'wifi_sta' GROUP BY 1
+),
+eu AS (
+  SELECT approx_percentile(rtt_ms, 0.5) AS v FROM heimdall.samples
+  WHERE {RE} AND kind = 'icmp' AND target_id = 'uplink' AND status = 'ok'
 ),
 p AS (
   SELECT substr(target_id, 5) AS client, max_by(dst_ip, ts_ms) AS ip,
@@ -1513,11 +1573,14 @@ m AS (
   FROM heimdall.samples WHERE {R} AND kind = 'mesh_node' GROUP BY 1
 ),
 c AS (
-  SELECT k.client, coalesce(fc.name, p.name) AS name, coalesce(fc.node, p.node, 'cpe') AS node,
-    coalesce(fc.medium, p.medium) AS medium, coalesce(fc.band, p.band) AS band,
-    coalesce(fc.flows, 0) AS flows, fc.lan50, fc.lan90, fc.wan50, p.ping50, w.rssi, w.retry_pct
-  FROM (SELECT client FROM fc UNION SELECT client FROM p) k
+  SELECT k.client, coalesce(fc.name, p.name) AS name,
+    coalesce(fc.node, p.node, e.node, ew.node, 'cpe') AS node,
+    coalesce(fc.medium, p.medium, e.medium) AS medium, coalesce(ew.band, fc.band, p.band, e.band) AS band,
+    coalesce(fc.flows, 0) AS flows, coalesce(fc.lann, 0) AS lann, fc.lan50, fc.lan90, fc.wan50, p.ping50,
+    coalesce(ew.rssi, w.rssi) AS rssi, w.retry_pct, coalesce(e.hopn, 0) AS hopn, e.hop50, e.hop90
+  FROM (SELECT client FROM fc UNION SELECT client FROM p UNION SELECT client FROM e) k
   LEFT JOIN fc ON fc.client = k.client LEFT JOIN p ON p.client = k.client LEFT JOIN w ON w.client = k.client
+  LEFT JOIN e ON e.client = k.client LEFT JOIN ew ON ew.client = k.client
   WHERE k.client IS NOT NULL AND coalesce(p.ip, '') NOT IN (SELECT coalesce(ip, '') FROM m)
 ),
 x AS (
@@ -1528,16 +1591,41 @@ x AS (
 """
 # A node or edge stat in milliseconds, or "" when unknown.
 MS = "CASE WHEN {v} IS NULL THEN '' ELSE format('%.1f ms', {v}) END"
-# Green, yellow, red by a client's LAN round trip (p90 of handshakes, else
-# its ping): a few ms is normal for Wi-Fi, tens of ms is not.
+# What a client's colour is judged by: the p90 of its handshakes' LAN part
+# when it opened at least LAN_MIN_FLOWS connections, else its ping. A p90
+# of one or two connections is one sample, and a device that sleeps
+# between rare connections (a smart plug) answers the first one late.
+LAN_MIN_FLOWS = 5
+LAN_METRIC = f"coalesce(CASE WHEN lann >= {LAN_MIN_FLOWS} THEN lan90 END, ping50)"
+# Green, yellow, red by LAN_METRIC: a few ms is normal for Wi-Fi, tens of
+# ms is not; grey without enough data.
 LAN_COLOR = (
-    "CASE WHEN coalesce(lan90, ping50) IS NULL THEN '#8e8e8e' WHEN coalesce(lan90, ping50) < 10 THEN '#73bf69'"
-    " WHEN coalesce(lan90, ping50) < 30 THEN '#fade2a' ELSE '#f2495c' END"
+    f"CASE WHEN {LAN_METRIC} IS NULL THEN '#8e8e8e' WHEN {LAN_METRIC} < 10 THEN '#73bf69'"
+    f" WHEN {LAN_METRIC} < 30 THEN '#fade2a' ELSE '#f2495c' END"
 )
 
 
 def ms(v: str) -> str:
     return MS.format(v=v)
+
+
+# Plain names of the probe's causes for home incidents; the notifier's
+# CAUSES has the longer Slack wording.
+CAUSE_TEXT = (
+    "CASE cause WHEN 'roaming' THEN 'moved between access points' WHEN 'weak_signal' THEN 'weak Wi-Fi signal' "
+    "WHEN 'retransmissions' THEN 'Wi-Fi retransmissions' WHEN 'radio_retransmissions' THEN 'busy or noisy radio' "
+    "WHEN 'channel_busy' THEN 'busy Wi-Fi channel' WHEN 'extender' THEN 'behind the extender' "
+    "WHEN 'weak_link_extender' THEN 'slow link to the extender' WHEN 'extender_wide' THEN 'extender, several clients' "
+    "WHEN 'wired_lan' THEN 'wired LAN' WHEN 'lan_latency' THEN 'LAN path, no Wi-Fi sign' "
+    "WHEN 'lan_wide' THEN 'whole home network' WHEN 'backhaul' THEN 'extender backhaul' ELSE cause END"
+)
+# The kind of an extender's link to the CPE, from the mesh topology's media
+# type. Only the kind: the WX5600 reports "IEEE 802.3u" (Fast Ethernet)
+# for a link that runs at 2.5 Gbit/s.
+BACKHAUL = (
+    "CASE WHEN backhaul LIKE 'IEEE 802.3%' THEN 'wired backhaul' WHEN backhaul LIKE 'IEEE 802.11%' "
+    "THEN 'Wi-Fi backhaul' ELSE 'backhaul' END"
+)
 
 
 def topology() -> dict[str, Any]:
@@ -1560,7 +1648,8 @@ def topology() -> dict[str, Any]:
     UNION ALL
     SELECT 'cpe', 'CPE', 'router', format('%d clients', (SELECT count(*) FROM c)), '', '#b877d9'
     UNION ALL
-    SELECT 'node:' || node, node, 'mesh extender', coalesce(backhaul, ''), '', '#b877d9' FROM x
+    SELECT 'node:' || node, node, 'mesh extender', format('%d clients', (SELECT count(*) FROM c WHERE c.node = x.node)),
+      {BACKHAUL}, '#b877d9' FROM x
     UNION ALL
     SELECT 'client:' || client, coalesce(name, client),
       concat_ws(' ', coalesce(band, medium), CASE WHEN rssi IS NULL THEN NULL ELSE format('%.0f dBm', rssi) END),
@@ -1588,12 +1677,16 @@ def topology() -> dict[str, Any]:
     )
     SELECT 'e:' || client AS id, 'client:' || client AS source,
       CASE WHEN node = 'cpe' THEN 'cpe' ELSE 'node:' || node END AS target,
-      {ms("coalesce(lan50, ping50)")} AS mainstat,
-      CASE WHEN lan90 IS NULL THEN '' ELSE 'p90 ' || {ms("lan90")} END AS secondarystat,
+      CASE WHEN hop50 IS NOT NULL AND node <> 'cpe' THEN 'hop ' || {ms("hop50")}
+        ELSE {ms("coalesce(lan50, ping50)")} END AS mainstat,
+      CASE WHEN hop90 IS NOT NULL AND node <> 'cpe' THEN 'hop p90 ' || {ms("hop90")}
+        WHEN lan90 IS NOT NULL THEN 'p90 ' || {ms("lan90")} ELSE '' END AS secondarystat,
       {LAN_COLOR} AS color
     FROM c
     UNION ALL
-    SELECT 'e:node:' || node, 'node:' || node, 'cpe', {ms("v")}, coalesce(backhaul, ''), '#b877d9' FROM ext
+    SELECT 'e:node:' || node, 'node:' || node, 'cpe',
+      {ms("coalesce(CASE WHEN node = (SELECT max(node) FROM ew) THEN (SELECT v FROM eu) END, v)")},
+      {BACKHAUL}, '#b877d9' FROM ext
     UNION ALL
     SELECT 'e:isp', 'cpe', 'isp', {ms("v")}, 'first hop', '#5794f2' FROM isp
     UNION ALL
@@ -1605,9 +1698,13 @@ def topology() -> dict[str, Any]:
     graph = {
         "type": "nodeGraph",
         "title": "Topology: clients to the CPE, the CPE to the internet",
-        "description": "Client nodes show the LAN round trip (p50 of their TCP handshakes, else their ping) and the "
-        "WAN part of their connections, coloured by LAN p90: green under 10 ms, yellow under 30 ms, red above. "
-        "Edges carry the same LAN and WAN figures; category nodes show the CPE's own TCP probes.",
+        "description": "Client nodes show the LAN round trip measured at the CPE (p50 of their TCP handshakes, "
+        "else their ping) and the WAN part of their connections. They are coloured by LAN p90 once a client "
+        f"opened {LAN_MIN_FLOWS} connections, else by its ping: green under 10 ms, yellow under 30 ms, red above, "
+        "grey without data. A client behind an extender that runs the probe has its own hop on its edge: the "
+        "round trip between the extender and the client alone. The extender's edge to the CPE is the backhaul, "
+        "the extender's ping to the CPE (else the CPE's ping to the extender). Category nodes show the CPE's own "
+        "TCP probes.",
         "datasource": DS,
         "options": {"layoutAlgorithm": "layered", "nodes": {}, "edges": {}, "zoomMode": "cooperative"},
         "targets": [target(nodes, TABLE, "nodes"), target(edges, TABLE, "edges")],
@@ -1621,17 +1718,23 @@ def topology() -> dict[str, Any]:
                 f"""
                 WITH {TOPO_CLIENTS}
                 SELECT coalesce(name, client) AS client, client AS id, node, coalesce(band, medium) AS link,
-                  round(rssi) AS rssi, lan50 AS lan_p50, lan90 AS lan_p90, ping50 AS ping_p50, wan50 AS wan_p50,
-                  coalesce(lan50, ping50) + wan50 AS total_p50, retry_pct, flows
+                  round(rssi) AS rssi, lan50 AS lan_p50, lan90 AS lan_p90, hop50 AS hop_p50, hop90 AS hop_p90,
+                  ping50 AS ping_p50, wan50 AS wan_p50, coalesce(lan50, ping50) + wan50 AS total_p50, retry_pct,
+                  flows
                 FROM c ORDER BY flows DESC
                 """,
                 "lan: the client's reply to the server's SYN-ACK, measured at the CPE (Wi-Fi or Ethernet round "
-                "trip). ping: the CPE's ping, best of a burst. wan: the server's answer to the client's SYN. "
-                "total: what the client waits for a connection, about lan + wan.",
+                "trip, and for clients of an extender also the backhaul and the extender). hop: the same reply "
+                "measured at the extender the client is attached to, which is the extender-to-client hop alone, "
+                "so lan - hop is what the backhaul and the extender add. ping: the CPE's ping, best of a burst. "
+                "wan: the server's answer to the client's SYN. total: what the client waits for a connection, "
+                "about lan + wan. rssi is the signal the access point receives from the client.",
                 units={
                     "rssi": "dBm",
                     "lan_p50": "ms",
                     "lan_p90": "ms",
+                    "hop_p50": "ms",
+                    "hop_p90": "ms",
                     "ping_p50": "ms",
                     "wan_p50": "ms",
                     "total_p50": "ms",
@@ -1642,7 +1745,53 @@ def topology() -> dict[str, Any]:
             14,
         ),
     ]
-    d = dashboard("heimdall-topology", "heimdall / topology", p, [LAN_DEVICE])
+    p.append(
+        L.place(
+            table(
+                "Home network incidents",
+                f"""
+                WITH e AS (
+                  SELECT device, ts_ms, json_extract_scalar(extra, '$.event') AS ev,
+                    json_extract_scalar(extra, '$.incident_id') AS id, json_extract_scalar(extra, '$.scope') AS scope,
+                    json_extract_scalar(extra, '$.cause') AS cause,
+                    array_join(CAST(json_extract(extra, '$.services') AS array(varchar)), ', ') AS services,
+                    CAST(json_extract_scalar(extra, '$.duration_s') AS bigint) AS duration_s,
+                    CAST(json_extract_scalar(extra, '$.confirmed') AS boolean) AS confirmed,
+                    CAST(json_extract_scalar(extra, '$.targets[0].current_ms') AS double) AS cur,
+                    CAST(json_extract_scalar(extra, '$.targets[0].baseline_ms') AS double) AS base
+                  FROM heimdall.samples
+                  WHERE {{RS}} AND kind = 'event' AND json_extract_scalar(extra, '$.event') LIKE 'incident\\_%' ESCAPE '\\'
+                    AND json_extract_scalar(extra, '$.scope') IN ('client', 'home', 'backhaul')
+                ),
+                i AS (
+                  SELECT id, arbitrary(device) AS device,
+                    min(ts_ms) FILTER (WHERE ev = 'incident_start') AS start_ms,
+                    max(ts_ms) FILTER (WHERE ev = 'incident_end') AS end_ms,
+                    arbitrary(scope) AS scope, max_by(cause, ts_ms) AS cause, max_by(services, ts_ms) AS services,
+                    max(duration_s) AS duration_s, bool_or(coalesce(confirmed, true)) AS confirmed,
+                    max_by(cur, ts_ms) FILTER (WHERE cur IS NOT NULL) AS cur,
+                    max_by(base, ts_ms) FILTER (WHERE base IS NOT NULL) AS base
+                  FROM e GROUP BY id
+                )
+                SELECT CAST(from_unixtime(start_ms / 1000.0) AS timestamp) AS start_time,
+                  CAST(from_unixtime(end_ms / 1000.0) AS timestamp) AS end_time,
+                  coalesce(duration_s, CAST((to_unixtime(now()) * 1000 - start_ms) / 1000 AS bigint)) AS duration,
+                  CASE WHEN device = '$ext' THEN 'extender' ELSE 'cpe' END AS seen_by, scope, {CAUSE_TEXT} AS cause,
+                  services AS clients, cur AS current_ms, base AS baseline_ms, confirmed
+                FROM i WHERE start_ms IS NOT NULL ORDER BY start_ms DESC LIMIT 50
+                """,
+                "Incidents of the home network, from the CPE's probe and the extender's: one client (its LAN round "
+                "trip, or on the extender its hop), several clients at once (home), or the extender's backhaul to "
+                "the CPE. Open incidents have no end time; their duration runs to now. Only confirmed incidents "
+                "(narrow ones that lasted 10 minutes) go to Slack. current and baseline are the worst member's "
+                "latency now and normally.",
+                units={"duration": "s", "current_ms": "ms", "baseline_ms": "ms"},
+            ),
+            24,
+            9,
+        )
+    )
+    d = dashboard("heimdall-topology", "heimdall / topology", p, [LAN_DEVICE, EXT])
     d["time"] = {"from": "now-30m", "to": "now"}
     d["refresh"] = "1m"
     return d

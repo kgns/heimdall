@@ -1,6 +1,7 @@
 // Package wifi reads Wi-Fi statistics on Broadcom CPEs through the wl
-// utility, and the EasyMesh topology that Zyxel CPEs write as JSON, which
-// lists the clients of every mesh node with their signal.
+// utility and on MediaTek access points through iwpriv, and the EasyMesh
+// topology that Zyxel CPEs write as JSON, which lists the clients of every
+// mesh node with their signal.
 package wifi
 
 import (

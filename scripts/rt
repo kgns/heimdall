@@ -9,7 +9,9 @@ ROUTER="${HEIMDALL_ROUTER:-root@192.168.1.1}"
 SOCK="${HEIMDALL_SSH_SOCK:-$HOME/.ssh/heimdall-router.sock}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ARCH="${HEIMDALL_ARCH:-arm64}"
-REMOTE=/misc/heimdall
+# An extender has no /misc; HEIMDALL_REMOTE=/tmp/heimdall keeps the probe
+# in RAM there, gone after a reboot.
+REMOTE="${HEIMDALL_REMOTE:-/misc/heimdall}"
 SAMPLES=/var/tmp/heimdall
 LOG=/var/tmp/heimdall-run.log
 PID=/var/tmp/heimdall.pid
@@ -69,6 +71,12 @@ deploy)
 		echo "config $(basename "$cfg"), upload token for $device installed"
 	else
 		echo "config $(basename "$cfg"), no upload token for '$device'"
+	fi
+	# A probe on an extender needs the CPE's client-ID salt, so that both
+	# name a client the same way; configs/local/<device>.salt holds a copy.
+	if [ -n "$device" ] && [ -f "$ROOT/configs/local/$device.salt" ]; then
+		r "umask 077 && cat > $REMOTE/lan.salt" < "$ROOT/configs/local/$device.salt"
+		echo "client-ID salt for $device installed"
 	fi
 	tar -C "$ROOT/catalog" -cf - . | r "tar -C $REMOTE/catalog -xf -"
 	tar -C "$ROOT/scripts/router" -cf - . | r "tar -C $REMOTE/scripts -xf -"

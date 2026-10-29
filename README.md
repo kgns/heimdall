@@ -97,7 +97,7 @@ Context collectors record what can explain a latency change:
 | `cpu` | CPU states, load, and UDP/TCP/ICMP error counter deltas from `/proc/net/snmp` | 1 s |
 | `lan` | ping burst to each LAN client, with its bridge port, medium and Wi-Fi context | 5 s |
 | `flow` | every TCP and QUIC handshake of a LAN client, split into LAN and WAN parts (see [LAN clients](#lan-clients)) | per connection |
-| `wifi_sta` | per Wi-Fi client: signal, noise, PHY rates, retries, power save, from `wl` or the mesh topology | 10 s |
+| `wifi_sta` | per Wi-Fi client: signal, noise, PHY rates, retries, power save, from `wl`, the mesh topology or, on a MediaTek extender, `iwpriv` | 10 s |
 | `wifi_radio` | per radio: channel, busy and interference shares (`chanim_stats`), frame and retry counters | 10 s |
 | `mesh_node` | per EasyMesh node (the CPE, extenders): address, mode, parent and backhaul | 10 s |
 | `dnshealth` | PID, memory and container memory limit/OOM count of dnsmasq and dnscrypt-proxy | 30 s |
@@ -155,6 +155,47 @@ than signal. With `collectors.lan.hostnames` the probe adds each client's DHCP h
 network. LAN pings are sent in bursts (`collectors.lan.burst`): a Wi-Fi
 client in power save answers the first only after it wakes for a beacon,
 and the sample keeps the best of the rest.
+
+### Mesh extender probe
+
+For a client behind a mesh extender, the CPE's LAN figure is the Wi-Fi
+hop to the extender and the backhaul together. A probe on the extender
+itself (a MediaTek Zyxel WX5600 here, `configs/extender.example.yaml`)
+measures what only the extender sees:
+
+- the hop between the extender and each client: the client's part of
+  every TCP handshake the extender bridges. `collectors.flows.position:
+  bridge` captures on the bridge's ports, because forwarded frames never
+  reach the bridge device. The CPE's LAN figure for the same client minus
+  this hop is what the backhaul and the extender add;
+- its stations and radios through `iwpriv` (`collectors.wifi.driver:
+  mtk`): signal per receive chain, power save, rates, traffic, and the
+  radio's failure and retransmission shares. The radio counters cover only
+  the frames the driver's CPU path sends, so shares of fewer than 50
+  frames are left out;
+- the backhaul: a ping to the CPE every second (target `uplink`, service
+  `backhaul`).
+
+It uploads as its own device and names its CPE in `site`. Its detector
+raises the incidents of its clients from its own readings and backhaul
+incidents; the CPE lists the extender in `detect.delegated_nodes` and
+raises no client incident for those clients. The notifier posts the
+extender's incidents under the CPE's name. The probe needs the CPE's
+client-ID salt, so that both probes name a client alike, and runs from
+`/tmp`, which is RAM, so it is gone after the extender reboots:
+
+```sh
+scripts/rt sh 'lxc-attach -n heimdall -- cat /opt/heimdall/etc/lan.salt' > configs/local/wx5600-ap-17479.salt
+scripts/new-device-token wx5600-ap-17479     # once; add the device to var.devices
+cp configs/extender.example.yaml configs/local/extender.yaml
+(cd probe && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o ../bin/linux-extender-arm64/heimdall-probe ./cmd/heimdall-probe)
+export HEIMDALL_ROUTER=root@192.168.1.2 HEIMDALL_SSH_SOCK=~/.ssh/heimdall-extender.sock \
+  HEIMDALL_REMOTE=/tmp/heimdall HEIMDALL_ARCH=extender-arm64 HEIMDALL_CONFIG=configs/local/extender.yaml
+scripts/rt connect && scripts/rt deploy && scripts/rt start
+```
+
+The binary goes to `bin/linux-extender-arm64` so that `bin/linux-arm64`,
+which the reflector instance is built from, is left alone.
 
 ### heimdall-client
 
@@ -217,7 +258,7 @@ the UI are lost on every deploy, so change dashboards in the generator.
 | service | what happens on one service's paths? Per-destination RTT and loss, HTTPS phases, edges, failures, destination changes |
 | network | access network, DNS, LAN and probe health |
 | LAN clients | is it the home network or the internet? Per client LAN and WAN parts, signal, retries, radio airtime, Wi-Fi events, and the heimdall-client cross-check |
-| topology | where is the time spent? A graph from every client through its mesh node and the CPE to the ISP and the internet, with each client's LAN round trip and WAN part, coloured by LAN p90, and a table of all clients |
+| topology | where is the time spent? A graph from every client through its mesh node and the CPE to the ISP and the internet, with each client's LAN round trip and WAN part (coloured by LAN p90 once it opened 5 connections, else by ping), the extender's own hop to its clients and its backhaul, a table of all clients, and the home network's incidents from both probes with duration and cause |
 
 The record's address is set by `heimdall-dnssync` (`terraform/dnssync.tf`)
 because the task's public IP changes on each deploy. The name is a direct
@@ -302,8 +343,14 @@ incident covers them. The cause comes from where the clients are attached:
 - for `home`: `extender` when all affected clients share one, `channel_busy`,
   or `lan_wide`
 
-Client and home incidents carry each client's context (node, band, signal,
-retries, radio busy share) and link to the LAN clients dashboard.
+On the extender's probe, its own clients are judged by its own readings:
+`roaming`, `weak_signal`, `radio_retransmissions` (its radio retransmits
+20% or more), `wired_lan` or `lan_latency`, and `extender_wide` for
+several of them at once. Its ping to the CPE opens `backhaul` incidents.
+
+Client, home and backhaul incidents carry each client's context (node,
+band, signal, retries, radio busy share) and link to the topology
+dashboard.
 
 Narrow incidents (one service, one client, DNS) are often blips of a few
 minutes. The probe marks an incident as confirmed with an

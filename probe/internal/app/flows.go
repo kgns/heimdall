@@ -10,6 +10,7 @@ import (
 
 	"github.com/kgns/heimdall/probe/internal/catalog"
 	"github.com/kgns/heimdall/probe/internal/collectors/flows"
+	"github.com/kgns/heimdall/probe/internal/collectors/lan"
 	"github.com/kgns/heimdall/probe/internal/config"
 	"github.com/kgns/heimdall/probe/internal/sample"
 )
@@ -22,11 +23,53 @@ type flowSampler struct {
 	fc         *flows.Collector
 	now        func() time.Time
 
+	// node is set on a bridge (an extender): every client whose
+	// connections pass it is attached to it, on the bridge port its
+	// frames arrive on.
+	node string
+
 	mu          sync.Mutex
 	windowStart time.Time
 	inWindow    int
 	emitted     uint64
 	capped      uint64
+
+	portMu  sync.Mutex
+	ports   map[string]string
+	portsAt time.Time
+}
+
+// portsTTL is how long the bridge's forwarding table is reused.
+const portsTTL = 10 * time.Second
+
+// gatewayMAC returns the default gateway's MAC address from the ARP
+// table.
+func (c *collectors) gatewayMAC() (net.HardwareAddr, error) {
+	gw := c.nw.Current().Gateway
+	if !gw.IsValid() {
+		return nil, fmt.Errorf("no default gateway")
+	}
+	arp, err := lan.ReadARP(c.fs)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range arp {
+		if e.IP == gw {
+			return e.MAC, nil
+		}
+	}
+	return nil, fmt.Errorf("gateway %s is not in the ARP table", gw)
+}
+
+// port returns the bridge member a client's frames arrive on, from the
+// bridge's forwarding table, re-read at most every few seconds.
+func (fs *flowSampler) port(mac net.HardwareAddr) string {
+	fs.portMu.Lock()
+	defer fs.portMu.Unlock()
+	if now := fs.now(); fs.ports == nil || now.Sub(fs.portsAt) > portsTTL {
+		fs.ports, fs.portsAt = lan.PortOf(fs.coll.fs, fs.cfg.Interface), now
+	}
+	return fs.ports[mac.String()]
 }
 
 // startFlows opens the capture and runs the flow collector until ctx is
@@ -40,18 +83,35 @@ func (c *collectors) startFlows(ctx context.Context) (*flowSampler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("flows: %w", err)
 	}
-	filter, err := flows.Filter(ifi.HardwareAddr)
+	// upstream is the address answers from servers come from: the CPE's
+	// own bridge on the CPE, the gateway's on an extender.
+	upstream := ifi.HardwareAddr
+	bridge := fcfg.Position == config.PositionBridge
+	if bridge {
+		if upstream, err = c.gatewayMAC(); err != nil {
+			return nil, fmt.Errorf("flows: %w", err)
+		}
+	}
+	filter, err := flows.Filter(upstream)
 	if err != nil {
 		return nil, fmt.Errorf("flows: %w", err)
 	}
-	capt, err := flows.OpenCapture(fcfg.Interface, filter, int(fcfg.ReceiveBuffer))
+	var capt flows.Capture
+	if bridge {
+		capt, err = flows.OpenBridgeCapture(fcfg.Interface, filter, int(fcfg.ReceiveBuffer))
+	} else {
+		capt, err = flows.OpenCapture(fcfg.Interface, filter, int(fcfg.ReceiveBuffer))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("flows: %w", err)
 	}
 	fs := &flowSampler{coll: c, cfg: fcfg, classifier: c.flowClassifier(), now: time.Now}
+	if bridge {
+		fs.node = c.cfg.Collectors.WiFi.Node
+	}
 	opt := flows.DefaultTrackerOptions()
 	opt.Local = newLocalAddrs(fcfg.Interface).contains
-	fs.fc = flows.NewCollector(capt, ifi.HardwareAddr, opt, fs.emit)
+	fs.fc = flows.NewCollector(capt, upstream, opt, fs.emit)
 	go func() {
 		if err := fs.fc.Run(ctx); err != nil {
 			c.log.Warn("flow capture stopped", "err", err)
@@ -170,6 +230,15 @@ func (fs *flowSampler) sample(f flows.Flow) sample.Sample {
 	}
 	for k, v := range fs.coll.clientContext(id) {
 		x[k] = v
+	}
+	if fs.node != "" {
+		x["node"] = fs.node
+		if p := fs.port(f.ClientMAC); p != "" {
+			x["port"] = p
+			if _, ok := x["medium"]; !ok {
+				x["medium"] = lan.Medium(p)
+			}
+		}
 	}
 	s.Extra = x
 	return s

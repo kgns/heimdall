@@ -1,0 +1,83 @@
+# heimdall-probe configuration for a MediaTek mesh extender (Zyxel WX5600)
+# that bridges its clients to the CPE. It measures what only the extender
+# sees: the Wi-Fi hop between the extender and each client (the client's
+# part of every TCP handshake it bridges), its radios and stations, and the
+# backhaul to the CPE. Deployed with
+#
+#   HEIMDALL_ROUTER=root@<extender> HEIMDALL_SSH_SOCK=~/.ssh/heimdall-extender.sock \
+#   HEIMDALL_REMOTE=/tmp/heimdall HEIMDALL_CONFIG=configs/local/extender.yaml scripts/rt deploy
+#
+# /tmp is RAM on the extender, so the probe is gone after a reboot. The
+# client-ID salt must be the CPE's (configs/local/<device>.salt), or the
+# two probes name the same client differently.
+device: wx5600-ap-17479
+# The CPE this extender belongs to; the dashboards show them together.
+site: ex7501-home
+
+runtime:
+  gomaxprocs: 1
+  memory_limit: 32MiB
+  nice: 10
+
+# Incidents of the extender's clients (their hop to the extender, judged
+# with the extender's own Wi-Fi readings) and of the backhaul to the CPE.
+# The CPE lists this extender in detect.delegated_nodes, so the two do not
+# both report the same client.
+detect:
+  enabled: true
+  access_services: []
+# Internet measurements are the CPE's job.
+discovery:
+  enabled: false
+trace:
+  interval: 0s
+dns:
+  enabled: false
+
+# The backhaul: the extender's round trip to the CPE.
+targets:
+  - {id: uplink, category: home, service: backhaul, auto: gateway}
+
+# The catalog names the connections; none of its services is measured.
+catalog:
+  path: /tmp/heimdall/catalog/targets.yaml
+  regions: [tr]
+  only: [none]
+
+output:
+  jsonl:
+    enabled: true
+    dir: /var/tmp/heimdall
+    max_file_size: 1MiB
+    max_files: 2
+
+upload:
+  enabled: true
+  url: https://ingest.lat.kgns.dev/v1/batch
+  token_file: /tmp/heimdall/upload.token
+  buffer: 8MiB
+  max_batch_bytes: 2MiB
+
+collectors:
+  wan:
+    interval: 0s
+  cpu:
+    interval: 5s
+  lan:
+    enabled: false
+    salt_file: /tmp/heimdall/lan.salt
+  flows:
+    enabled: true
+    interface: br0
+    position: bridge
+    # raw names servers and addresses: for this prototype on the owner's
+    # own network only.
+    names: raw
+  wifi:
+    interval: 10s
+    driver: mtk
+    # The extender's hostname in the CPE's mesh topology.
+    node: WX5600-AP-17479
+    mesh_file: ""
+  processes:
+    interval: 0s

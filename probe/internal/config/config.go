@@ -26,7 +26,11 @@ const AutoGateway = "gateway"
 
 // Config is the full probe configuration.
 type Config struct {
-	Device      string      `yaml:"device"`
+	Device string `yaml:"device"`
+	// Site is the device ID of the CPE whose home network this probe is
+	// part of, for a probe on an extender. It is reported with the
+	// heartbeat so that the cloud can show both devices together.
+	Site        string      `yaml:"site"`
 	Runtime     Runtime     `yaml:"runtime"`
 	Scheduler   Scheduler   `yaml:"scheduler"`
 	ICMP        ICMP        `yaml:"icmp"`
@@ -121,6 +125,13 @@ type Flows struct {
 	MaxPerMinute int `yaml:"max_per_minute"`
 	// ReceiveBuffer is the socket buffer for captured packets.
 	ReceiveBuffer ByteSize `yaml:"receive_buffer"`
+	// Position is where the probe sits on the clients' path: "gateway"
+	// (the CPE, which routes their traffic, so it arrives at Interface)
+	// or "bridge" (an access point or extender, which only bridges it
+	// towards the gateway between the members of Interface). On a bridge
+	// the client's round trip is the hop from the bridge to the client,
+	// and the server's includes the backhaul to the gateway.
+	Position string `yaml:"position"`
 }
 
 // Flow name levels.
@@ -130,16 +141,36 @@ const (
 	FlowNamesRaw      = "raw"
 )
 
+// Flow collector positions.
+const (
+	PositionGateway = "gateway"
+	PositionBridge  = "bridge"
+)
+
 // WiFi configures the Wi-Fi collector: radio and per-station statistics
-// read with the Broadcom wl utility, and the mesh topology the CPE's
-// EasyMesh controller writes to MeshFile.
+// read with the Broadcom wl utility or, on MediaTek access points, with
+// iwpriv and iwconfig, and the mesh topology the CPE's EasyMesh controller
+// writes to MeshFile.
 type WiFi struct {
 	Interval time.Duration `yaml:"interval"`
-	// Command is the wl utility; it is looked up in PATH.
+	// Driver selects the tools: "wl" (Broadcom) or "mtk" (MediaTek).
+	Driver string `yaml:"driver"`
+	// Command is the wl utility; it is looked up in PATH. It is not used
+	// with the mtk driver.
 	Command  string        `yaml:"command"`
 	MeshFile string        `yaml:"mesh_file"`
 	Timeout  time.Duration `yaml:"timeout"`
+	// Node names the access point in client samples: "cpe" on the CPE,
+	// or the extender's mesh hostname, as the CPE's mesh topology names
+	// it, so that both views of a client line up.
+	Node string `yaml:"node"`
 }
+
+// Wi-Fi drivers.
+const (
+	WiFiDriverWL  = "wl"
+	WiFiDriverMTK = "mtk"
+)
 
 // Periodic is a collector with an interval; zero disables it.
 type Periodic struct {
@@ -293,6 +324,13 @@ type Detect struct {
 	// is what the notifier posts. Access and home incidents are confirmed
 	// at once.
 	ConfirmAfter time.Duration `yaml:"confirm_after"`
+	// DelegatedNodes are mesh nodes (by their name in the mesh topology)
+	// that run their own probe, which raises the incidents of their
+	// clients; this probe then raises none for them.
+	DelegatedNodes []string `yaml:"delegated_nodes"`
+	// BackhaulServices measure the link to the gateway, such as an
+	// extender's ping to the CPE; their anomalies are backhaul incidents.
+	BackhaulServices []string `yaml:"backhaul_services"`
 }
 
 // Trace configures ICMP traceroutes. One trace runs every Interval, to the
@@ -428,7 +466,7 @@ func Default() Config {
 		UDP:       UDP{Interval: 5 * time.Second, Timeout: 2 * time.Second},
 		Trace:     Trace{Interval: 30 * time.Second, MaxHops: 24, Probes: 2, Timeout: 2 * time.Second, Gap: 20 * time.Millisecond},
 		Detect: Detect{Enabled: true, Warmup: 15 * time.Minute, AccessServices: []string{"isp-hop", "isp-gateway"},
-			ConfirmAfter: 10 * time.Minute},
+			ConfirmAfter: 10 * time.Minute, BackhaulServices: []string{"backhaul"}},
 		Discovery: Discovery{
 			Enabled: true, Interval: time.Hour, Timeout: 20 * time.Second,
 			// Istanbul.
@@ -459,8 +497,10 @@ func Default() Config {
 			},
 			Flows: Flows{
 				Interface: "br0", Names: FlowNamesService, MaxPerMinute: 1200, ReceiveBuffer: 512 * KiB,
+				Position: PositionGateway,
 			},
-			WiFi:      WiFi{Command: "wl", MeshFile: "/tmp/zy1905.json", Timeout: 3 * time.Second},
+			WiFi: WiFi{Driver: WiFiDriverWL, Command: "wl", MeshFile: "/tmp/zy1905.json", Timeout: 3 * time.Second,
+				Node: "cpe"},
 			Processes: Processes{Interval: 30 * time.Second, Names: []string{"dnsmasq", "dnscrypt-proxy"}},
 			Clock:     Clock{Interval: time.Minute, Server: "time.cloudflare.com", Timeout: 3 * time.Second},
 		},
@@ -632,6 +672,9 @@ func (c *Config) Validate() error {
 
 	if c.Device != "" && !idPattern.MatchString(c.Device) {
 		bad("device %q: use lowercase letters, digits, '.', '_' or '-'", c.Device)
+	}
+	if c.Site != "" && !idPattern.MatchString(c.Site) {
+		bad("site %q: use lowercase letters, digits, '.', '_' or '-'", c.Site)
 	}
 	if c.Runtime.GOMAXPROCS < 0 {
 		bad("runtime.gomaxprocs must not be negative")
@@ -965,13 +1008,25 @@ func (c *Config) validateCollectors(bad func(string, ...any)) {
 		if f.ReceiveBuffer < 64*KiB || f.ReceiveBuffer > 8*MiB {
 			bad("collectors.flows.receive_buffer must be between 64KiB and 8MiB")
 		}
+		if f.Position != PositionGateway && f.Position != PositionBridge {
+			bad("collectors.flows.position %q: want %s or %s", f.Position, PositionGateway, PositionBridge)
+		}
 	}
 	if w := co.WiFi; w.Interval != 0 {
 		if w.Interval < 2*time.Second {
 			bad("collectors.wifi.interval must be 0 (off) or at least 2s")
 		}
-		if w.Command == "" {
-			bad("collectors.wifi.command is required")
+		switch w.Driver {
+		case WiFiDriverWL:
+			if w.Command == "" {
+				bad("collectors.wifi.command is required")
+			}
+		case WiFiDriverMTK:
+		default:
+			bad("collectors.wifi.driver %q: want %s or %s", w.Driver, WiFiDriverWL, WiFiDriverMTK)
+		}
+		if w.Node == "" {
+			bad("collectors.wifi.node is required")
 		}
 		if w.Timeout <= 0 || w.Timeout > w.Interval {
 			bad("collectors.wifi.timeout must be in (0, interval]")

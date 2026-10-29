@@ -26,9 +26,39 @@ func ExecRunner(command string, timeout time.Duration) Runner {
 	}
 }
 
+// Execer runs the named command with args and returns its standard
+// output.
+type Execer func(ctx context.Context, name string, args ...string) ([]byte, error)
+
+// ExecCommands runs commands with a timeout per call.
+func ExecCommands(timeout time.Duration) Execer {
+	return func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return exec.CommandContext(ctx, name, args...).Output()
+	}
+}
+
+// Drivers.
+const (
+	DriverWL  = "wl"
+	DriverMTK = "mtk"
+)
+
 // Options configure a Collector.
 type Options struct {
+	// Driver is DriverWL (the default) or DriverMTK.
+	Driver string
+	// Run runs wl, for DriverWL.
 	Run Runner
+	// Exec runs iwpriv and iwconfig, for DriverMTK.
+	Exec Execer
+	// Node names this access point in client samples, for DriverMTK; the
+	// wl driver runs on the CPE, which is always "cpe".
+	Node string
+	// PortOf returns the bridge member each MAC was learned on, for
+	// DriverMTK, which tells which virtual interface a station is on.
+	PortOf func() map[string]string
 	// FS is the root file system, for sys/class/net and the mesh file.
 	FS fs.FS
 	// MeshFile is the topology file's path relative to FS, or empty.
@@ -47,6 +77,7 @@ type Collector struct {
 	opt Options
 
 	prevSta   map[string]StaInfo
+	prevMTK   map[string]MTKCounts
 	prevRadio map[string]map[string]uint64
 	chanspec  map[string]string
 	where     map[string]location
@@ -79,8 +110,11 @@ func New(opt Options) *Collector {
 	if opt.MaxStations <= 0 {
 		opt.MaxStations = 64
 	}
+	if opt.Node == "" {
+		opt.Node = cpeNode
+	}
 	return &Collector{
-		opt: opt, prevSta: map[string]StaInfo{}, prevRadio: map[string]map[string]uint64{},
+		opt: opt, prevSta: map[string]StaInfo{}, prevMTK: map[string]MTKCounts{}, prevRadio: map[string]map[string]uint64{},
 		chanspec: map[string]string{}, where: map[string]location{}, context: map[string]map[string]any{},
 		radioBusy: map[string]int64{}, lastRoam: map[string]int64{},
 	}
@@ -139,6 +173,10 @@ var chanimFields = []string{"tx", "inbss", "obss", "nocat", "nopkt", "doze", "tx
 
 // Poll reads every radio and station once and emits their samples.
 func (c *Collector) Poll(ctx context.Context) {
+	if c.opt.Driver == DriverMTK {
+		c.pollMTK(ctx)
+		return
+	}
 	now := c.opt.Now()
 	ts := now.UnixMilli()
 	type ifInfo struct {
@@ -266,6 +304,12 @@ func (c *Collector) Poll(ctx context.Context) {
 
 	meshOK := c.pollMesh(ts, now2, ctxNew)
 	c.events(ts, now2, meshOK)
+	c.publish(ts, ctxNew)
+}
+
+// publish adds the recent roams to the new client contexts and makes them
+// current.
+func (c *Collector) publish(ts int64, ctxNew map[string]map[string]any) {
 	for id, t := range c.lastRoam {
 		if ts-t > int64(time.Hour/time.Millisecond) {
 			delete(c.lastRoam, id)
@@ -275,7 +319,6 @@ func (c *Collector) Poll(ctx context.Context) {
 			cx["last_roam_ms"] = t
 		}
 	}
-
 	c.mu.Lock()
 	c.context = ctxNew
 	c.mu.Unlock()

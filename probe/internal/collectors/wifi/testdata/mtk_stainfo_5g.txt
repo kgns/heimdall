@@ -1,0 +1,10 @@
+MAC               MODE  AID  WCID   BSS PSM WMM MIMOPS RSSI0/1/2/3         PhMd(T/R)   BW(T/R)  MCS(T/R)      SGI(T/R)     STBC(T/R) Idle   Rate(T/R) MWDSCap 
+02:00:00:00:00:eb STA   19   4      0   1   1   3      -48/-44/-44/-47     HE_SU/OFDM  80M/80M   2S-M11/4      0.8us/NA     0/0       59     1201/24   0,0,0%
+                  MaxCap:                                                  HE          80M      2S-M11        1            0         -      1201      
+                  HT Operating Mode:2 HTC_ICVErr:0 HTC_AAD_OM_Force:NO wdev:4 i/btwt=0/0 Time:0000:50:01
+02:00:00:00:00:07 STA   20   5      2   0   1   3      -71/-127/0/-69      VHT/OFDM    40M/40M   1S-M7/2       0.8us/NA     0/0       3      150/12    0,0,0%
+                  MaxCap:                                                  VHT         40M      1S-M7         1            0         -      200       
+sta_cnt=2
+apcli_cnt=0
+rept_cnt=0
+HTC_ICV_Err_TH=5

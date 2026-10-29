@@ -161,7 +161,59 @@ def test_format_client_incident():
     assert "client - aaa" in text and "weak Wi-Fi signal" in text
     assert "flow/aaa: LAN part of its connections 40 ms vs 3 ms" in text
     assert "- client aaa: cpe, 5GHz, -80 dBm, 52 Mbit/s" in text
-    assert "AWS control" not in text and text.endswith("https://g/d/heimdall-clients")
+    assert "AWS control" not in text and text.endswith("https://g/d/heimdall-topology")
+
+
+def test_format_extender_incidents():
+    hop = {
+        "extra": {
+            "event": "incident_confirmed",
+            "scope": "client",
+            "cause": "radio_retransmissions",
+            "services": ["aaa"],
+            "duration_s": 660,
+            "targets": [
+                {"target_id": "flow/aaa", "kind": "flow", "current_ms": 30, "baseline_ms": 3, "reason": "latency"}
+            ],
+            "clients": {"aaa": {"node": "WX5600-AP-17479", "band": "2.4GHz", "rssi": -50}},
+        }
+    }
+    text = format_message("ex7501-home (extender wx5600-ap-17479)", hop, None, "", extender=True)
+    assert text.startswith(":red_circle: *ex7501-home (extender wx5600-ap-17479)* incident: client - aaa")
+    assert "flow/aaa: hop between the extender and the client 30 ms vs 3 ms" in text
+    assert "retransmissions on the access point's radio" in text
+    backhaul = {
+        "extra": {
+            "event": "incident_confirmed",
+            "scope": "backhaul",
+            "cause": "backhaul",
+            "services": ["backhaul"],
+            "targets": [
+                {
+                    "target_id": "uplink",
+                    "kind": "icmp",
+                    "dst_ip": "192.168.1.1",
+                    "current_ms": 25,
+                    "baseline_ms": 1,
+                    "reason": "latency",
+                }
+            ],
+        }
+    }
+    text = format_message("x", backhaul, None, "https://g/", extender=True)
+    assert "the link between the mesh extender and the CPE" in text
+    assert "- uplink (icmp, 192.168.1.1): 25 ms vs 1 ms" in text and text.endswith("d/heimdall-topology")
+
+
+def test_extender_incident_posted_under_its_site(aws):
+    table, ssm = aws
+    ssm.put_parameter(Name=WEBHOOK, Type="SecureString", Value="https://hooks.slack.com/services/T/B/x")
+    posts = []
+    n = notifier(table, ssm, posts)
+    n.sites = {"wx5600-ap-17479": "ex7501-home"}
+    start = ev("incident_start", scope="backhaul", cause="backhaul", services=["backhaul"], confirmed=True)
+    n({"device": "wx5600-ap-17479", "events": [start]})
+    assert len(posts) == 1 and "*ex7501-home (extender wx5600-ap-17479)*" in posts[0][1]
 
 
 def test_only_confirmed_incidents_are_posted(aws):

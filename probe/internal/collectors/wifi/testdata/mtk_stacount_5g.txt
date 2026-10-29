@@ -1,0 +1,4 @@
+HT Operating Mode : 2
+MAC                AID TxPackets   RxPackets   TxBytes     RxBytes     TP(Tx)      TP(Rx)      
+02:00:00:00:00:eb  19  38794       30691       22087895     5447576      0 Mbps        0 Mbps        
+02:00:00:00:00:07  20  1000        800         500000       40000        0 Mbps        0 Mbps        

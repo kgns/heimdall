@@ -166,6 +166,45 @@ func TestFilter(t *testing.T) {
 	}
 }
 
+func TestIncomingOnly(t *testing.T) {
+	raw, err := Filter(routerMAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := IncomingOnly(raw, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wrapped) != len(raw)+5 {
+		t.Fatalf("wrapped length %d, filter %d", len(wrapped), len(raw))
+	}
+	ins := make([]bpf.Instruction, len(wrapped))
+	for i, r := range wrapped {
+		ins[i] = r.Disassemble()
+	}
+	if ins[0] != (bpf.LoadExtension{Num: bpf.ExtType}) || ins[2] != (bpf.LoadExtension{Num: bpf.ExtInterfaceIndex}) {
+		t.Errorf("prelude loads: %v %v", ins[0], ins[2])
+	}
+	last := len(ins) - 1
+	if ins[last] != (bpf.RetConstant{Val: 0}) {
+		t.Errorf("last instruction %v", ins[last])
+	}
+	for _, at := range []int{1, 3} {
+		j, ok := ins[at].(bpf.JumpIf)
+		if !ok || at+1+int(j.SkipTrue) != last || j.SkipFalse != 0 {
+			t.Errorf("instruction %d %v does not jump to the final drop", at, ins[at])
+		}
+	}
+	if ins[1].(bpf.JumpIf).Val != packetOutgoing || ins[3].(bpf.JumpIf).Val != 7 {
+		t.Errorf("prelude tests: %v %v", ins[1], ins[3])
+	}
+	for i, r := range raw {
+		if wrapped[i+4] != r {
+			t.Fatalf("filter instruction %d changed", i)
+		}
+	}
+}
+
 func TestParseSNI(t *testing.T) {
 	hello := clientHello(t, "www.example.com")
 	if name, res := ParseSNI(hello); res != sniFound || name != "www.example.com" {

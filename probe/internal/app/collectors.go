@@ -70,8 +70,9 @@ func newCollectors(e *env, fsys fs.FS, nw *netwatch.Watcher, lookup resolve.Look
 	}
 	if w := co.WiFi; w.Interval > 0 {
 		c.wifiColl = wifi.New(wifi.Options{
-			Run: wifi.ExecRunner(w.Command, w.Timeout), FS: fsys, MeshFile: w.MeshFile,
-			ID: c.hasher.ID, Emit: e.rec.Emit,
+			Driver: w.Driver, Run: wifi.ExecRunner(w.Command, w.Timeout), Exec: wifi.ExecCommands(w.Timeout),
+			Node: w.Node, FS: fsys, MeshFile: w.MeshFile, ID: c.hasher.ID, Emit: e.rec.Emit,
+			PortOf: func() map[string]string { return lan.PortOf(fsys, co.Flows.Interface) },
 		})
 		c.wifi = c.wifiColl
 	}

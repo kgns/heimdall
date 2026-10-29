@@ -95,6 +95,11 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		opt.Warmup = cfg.Detect.Warmup
 		opt.AccessServices = cfg.Detect.AccessServices
 		opt.ConfirmAfter = cfg.Detect.ConfirmAfter
+		opt.DelegatedNodes = cfg.Detect.DelegatedNodes
+		opt.BackhaulServices = cfg.Detect.BackhaulServices
+		// The Wi-Fi collector's readings in the client context are this
+		// node's own.
+		opt.LocalNode = cfg.Collectors.WiFi.Node
 		det = detect.New(opt)
 		sinks = append(sinks, det)
 	}
@@ -367,6 +372,7 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 					"resolver_mode": resolverMode,
 					"lan_clients":   coll.LANClients(),
 					"incidents":     activeIncidents(det),
+					"site":          cfg.Site,
 				}})
 			},
 		})
@@ -423,6 +429,7 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		"upload":        cfg.Upload.Enabled,
 		"resolver_mode": resolverMode,
 		"isp_resolvers": addrPortStrings(ispServers),
+		"site":          cfg.Site,
 	}})
 	log.Info("probe started", "device", device, "version", version, "icmp_mode", pinger.Mode(),
 		"targets", len(targets), "jobs", jobCounts, "probe_rate", cfg.ProbeRate(),

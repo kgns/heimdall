@@ -6,6 +6,9 @@
 
 locals {
   slack_webhook_parameter = "/heimdall/slack/webhook_url"
+  # Probes on mesh extenders and the CPE whose home network they are part
+  # of; their incidents are posted under the CPE's name.
+  extender_sites = { "wx5600-ap-17479" = "ex7501-home" }
 }
 
 resource "aws_dynamodb_table" "incidents" {
@@ -95,6 +98,7 @@ resource "aws_lambda_function" "notifier" {
       CONTROL_DEVICE    = local.cloud_device
       GRAFANA_URL       = "https://${local.grafana_domain}/"
       DEVICE_ASN        = jsonencode({ for d, a in local.home_asn : d => a if d != local.cloud_device })
+      EXTENDER_SITES    = jsonencode(local.extender_sites)
     }
   }
 

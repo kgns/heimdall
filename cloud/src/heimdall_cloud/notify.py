@@ -44,18 +44,27 @@ CAUSES = {
     "dns_latency": "DNS resolution slowed down",
     "tls_blocked": "TLS handshakes fail after TCP connects (SNI filtering?)",
     "roaming": "the client moved between radios or mesh nodes",
-    "weak_signal": "weak Wi-Fi signal at the CPE",
+    "weak_signal": "weak Wi-Fi signal between the client and its access point",
     "retransmissions": "many Wi-Fi retransmissions to the client",
+    "radio_retransmissions": "many retransmissions on the access point's radio (interference or a congested channel)",
     "channel_busy": "the Wi-Fi channel is busy (neighbouring networks or heavy use)",
     "extender": "the client is behind a mesh extender (its radio or backhaul)",
     "weak_link_extender": "low link rate between the client and its mesh extender",
     "wired_lan": "wired LAN (cable, switch or the client itself)",
     "lan_latency": "the client's LAN path; the CPE's Wi-Fi readings show nothing unusual",
     "lan_wide": "several clients at once: the CPE or the whole home network",
+    "extender_wide": "several clients of the mesh extender at once: its radios or the extender itself",
+    "backhaul": "the link between the mesh extender and the CPE",
 }
 
 # Scopes about the home network rather than the internet.
-HOME_SCOPES = ("client", "home")
+HOME_SCOPES = ("client", "home", "backhaul")
+
+
+def device_label(device: str, sites: dict[str, str]) -> str:
+    """A probe on a mesh extender is named after the CPE it belongs to."""
+    site = sites.get(device)
+    return f"{site} (extender {device})" if site else device
 
 
 def _client_line(client: str, cx: dict[str, Any]) -> str:
@@ -143,8 +152,16 @@ def ioda_note(asn: int, now_s: int, fetch: Callable[[str], Any] | None = None) -
 
 
 def format_message(
-    device: str, ev: dict[str, Any], control: list[dict[str, Any]] | None, grafana: str, note: str | None = None
+    device: str,
+    ev: dict[str, Any],
+    control: list[dict[str, Any]] | None,
+    grafana: str,
+    note: str | None = None,
+    extender: bool = False,
 ) -> str:
+    """The Slack text of an incident event. device is the label to show;
+    extender is set for a probe on a mesh extender, whose client figures
+    are the hop between the extender and the client."""
     x = ev["extra"]
     name = x["event"]
     services = ", ".join(x.get("services") or []) or "-"
@@ -165,8 +182,11 @@ def format_message(
         detail = f"{_fmt_ms(t.get('current_ms'))} vs {_fmt_ms(t.get('baseline_ms'))}"
         if "loss" in (t.get("reason") or ""):
             detail += f", loss {100 * float(t.get('loss', 0)):.0f}%"
-        if home:
-            lines.append(f"- {t.get('target_id')}: LAN part of its connections {detail}")
+        if home and t.get("kind") == "flow":
+            what = "hop between the extender and the client" if extender else "LAN part of its connections"
+            lines.append(f"- {t.get('target_id')}: {what} {detail}")
+        elif home:
+            lines.append(f"- {t.get('target_id')} ({t.get('kind')}, {t.get('dst_ip')}): {detail}")
         else:
             lines.append(f"- {t.get('target_id')} ({t.get('kind')}, {t.get('dst_ip')}): {detail}")
     for client, cx in list((x.get("clients") or {}).items())[:5]:
@@ -179,7 +199,7 @@ def format_message(
     if note:
         lines.append(note)
     if grafana:
-        lines.append(f"{grafana}d/{'heimdall-clients' if home else 'heimdall-overview'}")
+        lines.append(f"{grafana}d/{'heimdall-topology' if home else 'heimdall-overview'}")
     return "\n".join(lines)
 
 
@@ -194,10 +214,12 @@ class Notifier:
         now: Callable[[], float] = time.time,
         device_asn: dict[str, int] | None = None,
         access_note: Callable[[int, int], str] = ioda_note,
+        extender_sites: dict[str, str] | None = None,
     ):
         self.table, self.webhook, self.control = table, webhook, control_device
         self.grafana, self.post, self.now = grafana_url, post, now
         self.device_asn, self.access_note = device_asn or {}, access_note
+        self.sites = extender_sites or {}
 
     def open_services(self, device: str) -> set[str]:
         """Services in the device's open incidents. Incidents that started
@@ -344,7 +366,9 @@ class Notifier:
             )
             if not post:
                 continue
-            text = format_message(device, ev, control, self.grafana, note)
+            text = format_message(
+                device_label(device, self.sites), ev, control, self.grafana, note, extender=device in self.sites
+            )
             try:
                 self.post(url, text)
                 posted += 1
@@ -369,5 +393,6 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             control_device=os.environ["CONTROL_DEVICE"],
             grafana_url=os.environ.get("GRAFANA_URL", ""),
             device_asn=json.loads(os.environ.get("DEVICE_ASN", "{}")),
+            extender_sites=json.loads(os.environ.get("EXTENDER_SITES", "{}")),
         )
     return _notifier(event, context)

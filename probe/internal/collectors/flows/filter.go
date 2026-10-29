@@ -144,6 +144,37 @@ func Filter(routerMAC net.HardwareAddr) ([]bpf.RawInstruction, error) {
 	return bpf.Assemble(prog)
 }
 
+// packetOutgoing is PACKET_OUTGOING, the packet type of frames the host
+// sends.
+const packetOutgoing = 4
+
+// IncomingOnly wraps filter so that it only sees frames received on an
+// interface other than skipIndex; the others are dropped. It is used for
+// captures on all interfaces, where a forwarded frame also shows up when
+// it leaves.
+func IncomingOnly(filter []bpf.RawInstruction, skipIndex int) ([]bpf.RawInstruction, error) {
+	n := len(filter)
+	// The prelude jumps over itself and the filter to a final drop.
+	if n+2 > 255 {
+		return nil, fmt.Errorf("bpf: filter of %d instructions is too long to wrap", n)
+	}
+	pre, err := bpf.Assemble([]bpf.Instruction{
+		bpf.LoadExtension{Num: bpf.ExtType},
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: packetOutgoing, SkipTrue: uint8(n + 2)},
+		bpf.LoadExtension{Num: bpf.ExtInterfaceIndex},
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: uint32(skipIndex), SkipTrue: uint8(n)},
+	})
+	if err != nil {
+		return nil, err
+	}
+	drop, err := bpf.Assemble([]bpf.Instruction{bpf.RetConstant{Val: 0}})
+	if err != nil {
+		return nil, err
+	}
+	out := append(pre, filter...)
+	return append(out, drop...), nil
+}
+
 // asm builds a BPF program with symbolic jump targets. An empty target
 // falls through to the next instruction.
 type asm struct {

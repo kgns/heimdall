@@ -20,6 +20,10 @@ type socket struct {
 	fd  int
 	buf []byte
 	oob []byte
+	// ports is set for a capture on all interfaces: only frames received
+	// on an interface other than skipIndex are returned.
+	ports     bool
+	skipIndex int
 }
 
 // OpenCapture opens a packet socket on iface with filter attached. It
@@ -29,6 +33,34 @@ func OpenCapture(iface string, filter []bpf.RawInstruction, rcvbuf int) (Capture
 	if err != nil {
 		return nil, err
 	}
+	return open(ifi.Index, filter, rcvbuf)
+}
+
+// OpenBridgeCapture captures the frames a bridge forwards between its
+// ports, which a socket on the bridge device itself does not see: frames
+// passing through a bridge reach only the taps of the ports they arrive
+// on and leave from. It listens on every interface and keeps the frames
+// as they are received, so each frame is seen once, on its way in; frames
+// delivered up to the bridge device are left out for the same reason.
+func OpenBridgeCapture(bridge string, filter []bpf.RawInstruction, rcvbuf int) (Capture, error) {
+	ifi, err := net.InterfaceByName(bridge)
+	if err != nil {
+		return nil, err
+	}
+	prog, err := IncomingOnly(filter, ifi.Index)
+	if err != nil {
+		return nil, err
+	}
+	c, err := open(0, prog, rcvbuf)
+	if err != nil {
+		return nil, err
+	}
+	s := c.(*socket)
+	s.ports, s.skipIndex = true, ifi.Index
+	return s, nil
+}
+
+func open(ifindex int, filter []bpf.RawInstruction, rcvbuf int) (Capture, error) {
 	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW|unix.SOCK_CLOEXEC, int(htons(unix.ETH_P_ALL)))
 	if err != nil {
 		return nil, fmt.Errorf("packet socket: %w", err)
@@ -59,9 +91,9 @@ func OpenCapture(iface string, filter []bpf.RawInstruction, rcvbuf int) (Capture
 	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv); err != nil {
 		return nil, fmt.Errorf("receive timeout: %w", err)
 	}
-	sa := &unix.SockaddrLinklayer{Protocol: htons(unix.ETH_P_ALL), Ifindex: ifi.Index}
+	sa := &unix.SockaddrLinklayer{Protocol: htons(unix.ETH_P_ALL), Ifindex: ifindex}
 	if err := unix.Bind(fd, sa); err != nil {
-		return nil, fmt.Errorf("bind %s: %w", iface, err)
+		return nil, fmt.Errorf("bind interface %d: %w", ifindex, err)
 	}
 	ok = true
 	return &socket{fd: fd, buf: make([]byte, snapHello+64), oob: make([]byte, 128)}, nil
@@ -72,7 +104,7 @@ func OpenCapture(iface string, filter []bpf.RawInstruction, rcvbuf int) (Capture
 // while.
 func (s *socket) Read() ([]byte, time.Time, error) {
 	for {
-		n, oobn, _, _, err := unix.Recvmsg(s.fd, s.buf, s.oob, 0)
+		n, oobn, _, from, err := unix.Recvmsg(s.fd, s.buf, s.oob, 0)
 		if err != nil {
 			if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EWOULDBLOCK) {
 				return nil, time.Time{}, ErrTimeout
@@ -81,6 +113,13 @@ func (s *socket) Read() ([]byte, time.Time, error) {
 				continue
 			}
 			return nil, time.Time{}, err
+		}
+		if s.ports {
+			// The filter already drops these; the check also holds where
+			// the kernel ignores the filter's ancillary loads.
+			if ll, ok := from.(*unix.SockaddrLinklayer); ok && (ll.Pkttype == unix.PACKET_OUTGOING || ll.Ifindex == s.skipIndex) {
+				continue
+			}
 		}
 		ts := time.Time{}
 		if msgs, err := unix.ParseSocketControlMessage(s.oob[:oobn]); err == nil {

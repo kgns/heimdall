@@ -302,9 +302,71 @@ func TestClientCause(t *testing.T) {
 		{map[string]any{"node": "cpe", "rssi": -50}, "lan_latency"},
 	}
 	for _, c := range cases {
-		if got := clientCause("client", map[string]map[string]any{"x": c.cx}); got != c.want {
+		if got := clientCause("client", map[string]map[string]any{"x": c.cx}, "cpe"); got != c.want {
 			t.Errorf("%v: got %s, want %s", c.cx, got, c.want)
 		}
+	}
+	// On the extender, its own clients are judged by its own readings.
+	ext := []struct {
+		cx   map[string]any
+		want string
+	}{
+		{map[string]any{"node": "WX5600", "rssi": -80, "tx_rate_mbps": 380.0}, "weak_signal"},
+		{map[string]any{"node": "WX5600", "rssi": -50, "radio_retrans_pct": 30.0}, "radio_retransmissions"},
+		{map[string]any{"node": "WX5600", "medium": "wired"}, "wired_lan"},
+		{map[string]any{"node": "WX5600", "rssi": -50}, "lan_latency"},
+	}
+	for _, c := range ext {
+		if got := clientCause("client", map[string]map[string]any{"x": c.cx}, "WX5600"); got != c.want {
+			t.Errorf("on the extender %v: got %s, want %s", c.cx, got, c.want)
+		}
+	}
+	home := map[string]map[string]any{"a": {"node": "WX5600"}, "b": {"node": "WX5600"}}
+	if got := clientCause("home", home, "WX5600"); got != "extender_wide" {
+		t.Errorf("home on the extender: %s", got)
+	}
+	if got := clientCause("home", home, "cpe"); got != "extender" {
+		t.Errorf("home of extender clients on the CPE: %s", got)
+	}
+}
+
+func TestDelegatedNodes(t *testing.T) {
+	opt := DefaultOptions()
+	opt.DelegatedNodes = []string{"WX5600"}
+	d := New(opt)
+	d.SetClientContext(func(c string) map[string]any {
+		if c == "aaa" {
+			return map[string]any{"node": "WX5600", "medium": "wifi"}
+		}
+		return map[string]any{"node": "cpe", "medium": "wifi", "rssi": -50}
+	})
+	a, b, c := flow("aaa", 3), flow("bbb", 2), flow("ccc", 2)
+	run(d, 0, 30, a, b, c)
+	if ev := run(d, 30, 36, flow("aaa", 40), b, c); len(ev["incident_start"]) != 0 {
+		t.Fatalf("client of a delegated node raised an incident: %v", ev["incident_start"])
+	}
+	ev := run(d, 36, 42, flow("aaa", 40), flow("bbb", 30), c)
+	if len(ev["incident_start"]) != 1 || ev["incident_start"][0].Extra["scope"] != "home" {
+		t.Fatalf("delegated clients must still count towards home incidents: %v", ev)
+	}
+}
+
+func TestBackhaulIncident(t *testing.T) {
+	d := New(DefaultOptions())
+	up := icmp("uplink", "backhaul", "home", 1)
+	run(d, 0, 30, up)
+	slow := up
+	slow.rtt = 40
+	ev := run(d, 30, 36, slow)
+	if len(ev["incident_start"]) != 1 {
+		t.Fatalf("%v", ev)
+	}
+	inc := ev["incident_start"][0]
+	if inc.Extra["scope"] != "backhaul" || inc.Extra["cause"] != "backhaul" || inc.Extra["confirmed"] != false {
+		t.Fatalf("%+v", inc.Extra)
+	}
+	if svcs := inc.Extra["services"].([]string); len(svcs) != 1 || svcs[0] != "backhaul" {
+		t.Fatalf("services %v", svcs)
 	}
 }
 

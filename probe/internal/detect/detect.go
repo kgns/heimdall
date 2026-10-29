@@ -82,10 +82,24 @@ type Options struct {
 	HomeMin      int
 	HomeFraction float64
 	// ConfirmAfter is how long a narrow incident (one service, one
-	// client, DNS) must last before an incident_confirmed event marks it
-	// as worth notifying. Access and home incidents are confirmed at
-	// once. Zero confirms every incident at once.
+	// client, DNS, the backhaul) must last before an incident_confirmed
+	// event marks it as worth notifying. Access and home incidents are
+	// confirmed at once. Zero confirms every incident at once.
 	ConfirmAfter time.Duration
+	// LocalNode is the access point whose Wi-Fi readings the client
+	// context holds: "cpe" on the CPE, the extender's name on an extender.
+	// Clients of other nodes are judged only by what the mesh topology
+	// tells about them.
+	LocalNode string
+	// DelegatedNodes are mesh nodes that run their own probe, which
+	// measures their clients' hop and raises their incidents; this probe
+	// raises no client incident for a client attached to one. They still
+	// count towards home incidents.
+	DelegatedNodes []string
+	// BackhaulServices measure this probe's link to its gateway, such as
+	// an extender's ping to the CPE; an anomaly there is a backhaul
+	// incident.
+	BackhaulServices []string
 }
 
 // ClientContext describes where a LAN client is attached: node, medium,
@@ -97,7 +111,7 @@ func DefaultOptions() Options {
 	return Options{
 		Warmup: 15 * time.Minute, AccessServices: []string{"isp-hop", "isp-gateway"},
 		AccessFraction: 0.3, AccessMin: 3, HomeMin: 2, HomeFraction: 0.5,
-		ConfirmAfter: 10 * time.Minute,
+		ConfirmAfter: 10 * time.Minute, LocalNode: "cpe", BackhaulServices: []string{"backhaul"},
 	}
 }
 
@@ -145,7 +159,7 @@ type tlsStat struct {
 // Incident is a group of anomalies with one scope.
 type Incident struct {
 	ID       string
-	Scope    string // access, service, dns, client, home
+	Scope    string // access, service, dns, client, home, backhaul
 	Cause    string
 	Service  string
 	Category string
@@ -188,6 +202,9 @@ func (d *Detector) SetClientContext(f ClientContext) {
 
 // New returns a detector.
 func New(opt Options) *Detector {
+	if opt.LocalNode == "" {
+		opt.LocalNode = "cpe"
+	}
 	return &Detector{
 		opt: opt, series: map[key]*series{}, dstChanges: map[string]time.Time{},
 		tls: map[string]*tlsStat{}, services: map[string]string{}, incidents: map[string]*Incident{},
@@ -436,7 +453,7 @@ func (d *Detector) anomalyEvent(sr *series, event string, now time.Time) sample.
 // correlate groups the anomalous series into incidents.
 func (d *Detector) correlate(now time.Time) []sample.Sample {
 	byService := map[string][]*series{}
-	var access, dns, clients []*series
+	var access, dns, clients, backhaul []*series
 	activeClients := 0
 	for _, sr := range d.series {
 		if sr.key.kind == sample.KindFlow && now.Sub(sr.lastSeen) <= 10*time.Minute {
@@ -452,6 +469,8 @@ func (d *Detector) correlate(now time.Time) []sample.Sample {
 			access = append(access, sr)
 		case sr.key.kind == sample.KindDNS:
 			dns = append(dns, sr)
+		case slices.Contains(d.opt.BackhaulServices, sr.service):
+			backhaul = append(backhaul, sr)
 		case sr.category == "home":
 		default:
 			byService[sr.service] = append(byService[sr.service], sr)
@@ -490,6 +509,10 @@ func (d *Detector) correlate(now time.Time) []sample.Sample {
 	if len(dns) > 0 {
 		want["dns"], members["dns"] = &Incident{Scope: "dns", Cause: "dns_latency", Category: "infra", Service: "dns"}, dns
 	}
+	if len(backhaul) > 0 {
+		want["backhaul"] = &Incident{Scope: "backhaul", Cause: "backhaul", Category: "home", Service: backhaul[0].service}
+		members["backhaul"] = backhaul
+	}
 	if len(clients) > 0 {
 		home := len(clients) >= d.opt.HomeMin && float64(len(clients)) >= d.opt.HomeFraction*float64(activeClients)
 		if home {
@@ -497,6 +520,9 @@ func (d *Detector) correlate(now time.Time) []sample.Sample {
 			members["home"] = clients
 		} else {
 			for _, sr := range clients {
+				if d.delegated(sr.client) {
+					continue
+				}
 				k := "client:" + sr.client
 				want[k] = &Incident{Scope: "client", Category: "home", Service: "lan"}
 				members[k] = []*series{sr}
@@ -532,7 +558,7 @@ func (d *Detector) correlate(now time.Time) []sample.Sample {
 			if w.Scope == "client" || w.Scope == "home" {
 				w.services = clientList(members[k])
 				w.context = d.contexts(members[k])
-				w.Cause = clientCause(w.Scope, w.context)
+				w.Cause = clientCause(w.Scope, w.context, d.opt.LocalNode)
 			}
 			w.confirmed = d.opt.ConfirmAfter == 0 || slices.Contains(immediateScopes, w.Scope)
 			d.incidents[k] = w
@@ -543,7 +569,7 @@ func (d *Detector) correlate(now time.Time) []sample.Sample {
 				svcs = clientList(members[k])
 				if !slices.Equal(svcs, cur.services) && now.Sub(cur.lastSent) >= updateEvery {
 					cur.context = d.contexts(members[k])
-					cur.Cause = clientCause(cur.Scope, cur.context)
+					cur.Cause = clientCause(cur.Scope, cur.context, d.opt.LocalNode)
 				}
 			}
 			if !cur.confirmed && now.Sub(cur.Started) >= d.opt.ConfirmAfter {
@@ -603,6 +629,16 @@ func clientList(ss []*series) []string {
 	return out
 }
 
+// delegated reports whether client is attached to a node that runs its
+// own probe.
+func (d *Detector) delegated(client string) bool {
+	if len(d.opt.DelegatedNodes) == 0 || d.clientCtx == nil {
+		return false
+	}
+	node, _ := d.clientCtx(client)["node"].(string)
+	return node != "" && slices.Contains(d.opt.DelegatedNodes, node)
+}
+
 func (d *Detector) contexts(ss []*series) map[string]map[string]any {
 	out := map[string]map[string]any{}
 	for _, sr := range ss[:min(len(ss), maxTargetsInEvent)] {
@@ -628,10 +664,12 @@ const (
 )
 
 // clientCause names the likely cause of a client or home incident from
-// where the clients are attached. An extender reports the signal it
-// receives from the client, which reads well below what the client itself
-// sees, so extender clients are judged by their link rate instead.
-func clientCause(scope string, ctx map[string]map[string]any) string {
+// where the clients are attached. local is the node whose own Wi-Fi
+// readings the context holds. The CPE learns about the clients of an
+// extender only from the mesh topology, where the extender reports a
+// signal well below what the client itself sees, so those clients are
+// judged by their link rate instead.
+func clientCause(scope string, ctx map[string]map[string]any, local string) string {
 	if scope == "home" {
 		nodes, busy := map[string]bool{}, 0
 		for _, cx := range ctx {
@@ -642,7 +680,9 @@ func clientCause(scope string, ctx map[string]map[string]any) string {
 			}
 		}
 		switch {
-		case len(nodes) == 1 && !nodes["cpe"] && !nodes[""]:
+		case len(nodes) == 1 && nodes[local] && local != "cpe":
+			return "extender_wide"
+		case len(nodes) == 1 && !nodes[local] && !nodes[""]:
 			return "extender"
 		case busy*2 >= len(ctx):
 			return "channel_busy"
@@ -656,7 +696,7 @@ func clientCause(scope string, ctx map[string]map[string]any) string {
 		if t, ok := num(cx["last_roam_ms"]); ok && time.Since(time.UnixMilli(int64(t))) <= recentRoaming {
 			return "roaming"
 		}
-		if node != "" && node != "cpe" {
+		if node != "" && node != local {
 			if v, ok := num(cx["tx_rate_mbps"]); ok && v > 0 && v < slowLinkMbps {
 				return "weak_link_extender"
 			}
@@ -667,6 +707,9 @@ func clientCause(scope string, ctx map[string]map[string]any) string {
 		}
 		if v, ok := num(cx["retry_pct"]); ok && v >= highRetryPct {
 			return "retransmissions"
+		}
+		if v, ok := num(cx["radio_retrans_pct"]); ok && v >= highRetryPct {
+			return "radio_retransmissions"
 		}
 		if v, ok := num(cx["radio_busy"]); ok && v >= busyRadioPct {
 			return "channel_busy"
