@@ -58,6 +58,9 @@ collectors:
   lan:
     salt_file: /opt/heimdall/etc/lan.salt
     burst: 2
+    # DHCP hostnames with client samples: prototype on the owner's own
+    # network only, like flows.names: raw.
+    hostnames: true
   flows:
     enabled: true
     # raw names servers and addresses: for this prototype on the owner's

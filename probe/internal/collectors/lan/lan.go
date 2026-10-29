@@ -85,10 +85,12 @@ func ParseARP(r io.Reader) ([]ARPEntry, error) {
 type Lease struct {
 	IP  netip.Addr
 	MAC net.HardwareAddr
+	// Hostname is the name the client sent, or "" when it sent none.
+	Hostname string
 }
 
-// ReadLeases parses a dnsmasq lease file at an absolute path. Hostnames and
-// client IDs are not kept.
+// ReadLeases parses a dnsmasq lease file at an absolute path. Client IDs
+// are not kept.
 func ReadLeases(fsys fs.FS, abs string) ([]Lease, error) {
 	f, err := fsys.Open(strings.TrimPrefix(path.Clean("/"+abs), "/"))
 	if err != nil {
@@ -110,7 +112,11 @@ func ReadLeases(fsys fs.FS, abs string) ([]Lease, error) {
 		if err != nil || !ip.Is4() {
 			continue
 		}
-		out = append(out, Lease{IP: ip, MAC: mac})
+		l := Lease{IP: ip, MAC: mac}
+		if len(fl) >= 4 && fl[3] != "*" {
+			l.Hostname = fl[3]
+		}
+		out = append(out, l)
 	}
 	return out, sc.Err()
 }

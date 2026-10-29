@@ -1,0 +1,239 @@
+{
+  "uid": "heimdall-topology",
+  "title": "heimdall / topology",
+  "tags": [
+    "heimdall"
+  ],
+  "timezone": "browser",
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 41,
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "device",
+        "label": "device",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-athena-datasource",
+          "uid": "athena"
+        },
+        "query": {
+          "refId": "device",
+          "format": 1,
+          "rawSQL": "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'heartbeat'",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        },
+        "definition": "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'heartbeat'",
+        "refresh": 2,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "current": {}
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "type": "dashboards",
+      "tags": [
+        "heimdall"
+      ],
+      "asDropdown": false,
+      "title": "heimdall"
+    }
+  ],
+  "panels": [
+    {
+      "type": "nodeGraph",
+      "title": "Topology: clients to the CPE, the CPE to the internet",
+      "description": "Client nodes show the LAN round trip (p50 of their TCP handshakes, else their ping) and the WAN part of their connections, coloured by LAN p90: green under 10 ms, yellow under 30 ms, red above. Edges carry the same LAN and WAN figures; category nodes show the CPE's own TCP probes.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "options": {
+        "layoutAlgorithm": "layered",
+        "nodes": {},
+        "edges": {},
+        "zoomMode": "cooperative"
+      },
+      "targets": [
+        {
+          "refId": "nodes",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "WITH f AS ( SELECT ts_ms, json_extract_scalar(extra, '$.client') AS client, coalesce(json_extract_scalar(extra, '$.node'), 'cpe') AS node, json_extract_scalar(extra, '$.medium') AS medium, json_extract_scalar(extra, '$.band') AS band, json_extract_scalar(extra, '$.client_name') AS name, json_extract_scalar(extra, '$.proto') AS proto, status, CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan, CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'flow' ), fc AS ( SELECT client, max_by(node, ts_ms) AS node, max_by(medium, ts_ms) AS medium, max_by(band, ts_ms) AS band, max_by(name, ts_ms) AS name, count(*) AS flows, approx_percentile(lan, 0.5) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan50, approx_percentile(lan, 0.9) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan90, approx_percentile(wan, 0.5) FILTER (WHERE status = 'ok') AS wan50 FROM f GROUP BY 1 ), p AS ( SELECT substr(target_id, 5) AS client, max_by(dst_ip, ts_ms) AS ip, max_by(json_extract_scalar(extra, '$.client_name'), ts_ms) AS name, max_by(coalesce(json_extract_scalar(extra, '$.node'), 'cpe'), ts_ms) AS node, max_by(json_extract_scalar(extra, '$.medium'), ts_ms) AS medium, max_by(json_extract_scalar(extra, '$.band'), ts_ms) AS band, approx_percentile(rtt_ms, 0.5) FILTER (WHERE status = 'ok') AS ping50 FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'lan' GROUP BY 1 ), w AS ( SELECT json_extract_scalar(extra, '$.client') AS client, avg(CAST(json_extract_scalar(extra, '$.rssi') AS double)) AS rssi, 100.0 * sum(CAST(json_extract_scalar(extra, '$.tx_retries') AS double)) / nullif(sum(CAST(json_extract_scalar(extra, '$.tx_sent') AS double)), 0) AS retry_pct FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'wifi_sta' GROUP BY 1 ), m AS ( SELECT json_extract_scalar(extra, '$.node') AS node, max_by(dst_ip, ts_ms) AS ip, max_by(json_extract_scalar(extra, '$.node_mode'), ts_ms) AS mode, max_by(json_extract_scalar(extra, '$.backhaul'), ts_ms) AS backhaul, max_by(json_extract_scalar(extra, '$.parent'), ts_ms) AS parent FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'mesh_node' GROUP BY 1 ), c AS ( SELECT k.client, coalesce(fc.name, p.name) AS name, coalesce(fc.node, p.node, 'cpe') AS node, coalesce(fc.medium, p.medium) AS medium, coalesce(fc.band, p.band) AS band, coalesce(fc.flows, 0) AS flows, fc.lan50, fc.lan90, fc.wan50, p.ping50, w.rssi, w.retry_pct FROM (SELECT client FROM fc UNION SELECT client FROM p) k LEFT JOIN fc ON fc.client = k.client LEFT JOIN p ON p.client = k.client LEFT JOIN w ON w.client = k.client WHERE k.client IS NOT NULL AND coalesce(p.ip, '') NOT IN (SELECT coalesce(ip, '') FROM m) ), x AS ( SELECT n.node, m.ip, m.backhaul FROM (SELECT node FROM m WHERE mode = 'AP' UNION SELECT node FROM c WHERE node <> 'cpe') n LEFT JOIN m ON m.node = n.node ) , isp AS ( SELECT approx_percentile(rtt_ms, 0.5) AS v FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'icmp' AND status = 'ok' AND target_id = 'isp-hop1' ), cat AS ( SELECT category, approx_percentile(rtt_ms, 0.5) AS v, count(DISTINCT service) AS services FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'tcp' AND status = 'ok' AND category NOT IN ('infra', 'home') AND target_id NOT LIKE 'client/%' GROUP BY 1 ) SELECT 'internet' AS id, 'Internet' AS title, 'servers clients reached' AS subtitle, CASE WHEN (SELECT approx_percentile(wan50, 0.5) FROM c) IS NULL THEN '' ELSE format('%.1f ms', (SELECT approx_percentile(wan50, 0.5) FROM c)) END AS mainstat, 'clients, WAN p50' AS secondarystat, '#5794f2' AS color UNION ALL SELECT 'isp', 'ISP', 'first hop', CASE WHEN v IS NULL THEN '' ELSE format('%.1f ms', v) END, 'CPE to ISP', '#5794f2' FROM isp UNION ALL SELECT 'cpe', 'CPE', 'router', format('%d clients', (SELECT count(*) FROM c)), '', '#b877d9' UNION ALL SELECT 'node:' || node, node, 'mesh extender', coalesce(backhaul, ''), '', '#b877d9' FROM x UNION ALL SELECT 'client:' || client, coalesce(name, client), concat_ws(' ', coalesce(band, medium), CASE WHEN rssi IS NULL THEN NULL ELSE format('%.0f dBm', rssi) END), CASE WHEN coalesce(lan50, ping50) IS NULL THEN '' ELSE format('%.1f ms', coalesce(lan50, ping50)) END, CASE WHEN wan50 IS NULL THEN '' ELSE 'wan ' || CASE WHEN wan50 IS NULL THEN '' ELSE format('%.1f ms', wan50) END END, CASE WHEN coalesce(lan90, ping50) IS NULL THEN '#8e8e8e' WHEN coalesce(lan90, ping50) < 10 THEN '#73bf69' WHEN coalesce(lan90, ping50) < 30 THEN '#fade2a' ELSE '#f2495c' END FROM c UNION ALL SELECT 'cat:' || category, category, format('%d services, CPE probe', services), CASE WHEN v IS NULL THEN '' ELSE format('%.1f ms', v) END, 'TCP connect p50', '#ff9830' FROM cat",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        },
+        {
+          "refId": "edges",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "WITH f AS ( SELECT ts_ms, json_extract_scalar(extra, '$.client') AS client, coalesce(json_extract_scalar(extra, '$.node'), 'cpe') AS node, json_extract_scalar(extra, '$.medium') AS medium, json_extract_scalar(extra, '$.band') AS band, json_extract_scalar(extra, '$.client_name') AS name, json_extract_scalar(extra, '$.proto') AS proto, status, CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan, CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'flow' ), fc AS ( SELECT client, max_by(node, ts_ms) AS node, max_by(medium, ts_ms) AS medium, max_by(band, ts_ms) AS band, max_by(name, ts_ms) AS name, count(*) AS flows, approx_percentile(lan, 0.5) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan50, approx_percentile(lan, 0.9) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan90, approx_percentile(wan, 0.5) FILTER (WHERE status = 'ok') AS wan50 FROM f GROUP BY 1 ), p AS ( SELECT substr(target_id, 5) AS client, max_by(dst_ip, ts_ms) AS ip, max_by(json_extract_scalar(extra, '$.client_name'), ts_ms) AS name, max_by(coalesce(json_extract_scalar(extra, '$.node'), 'cpe'), ts_ms) AS node, max_by(json_extract_scalar(extra, '$.medium'), ts_ms) AS medium, max_by(json_extract_scalar(extra, '$.band'), ts_ms) AS band, approx_percentile(rtt_ms, 0.5) FILTER (WHERE status = 'ok') AS ping50 FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'lan' GROUP BY 1 ), w AS ( SELECT json_extract_scalar(extra, '$.client') AS client, avg(CAST(json_extract_scalar(extra, '$.rssi') AS double)) AS rssi, 100.0 * sum(CAST(json_extract_scalar(extra, '$.tx_retries') AS double)) / nullif(sum(CAST(json_extract_scalar(extra, '$.tx_sent') AS double)), 0) AS retry_pct FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'wifi_sta' GROUP BY 1 ), m AS ( SELECT json_extract_scalar(extra, '$.node') AS node, max_by(dst_ip, ts_ms) AS ip, max_by(json_extract_scalar(extra, '$.node_mode'), ts_ms) AS mode, max_by(json_extract_scalar(extra, '$.backhaul'), ts_ms) AS backhaul, max_by(json_extract_scalar(extra, '$.parent'), ts_ms) AS parent FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'mesh_node' GROUP BY 1 ), c AS ( SELECT k.client, coalesce(fc.name, p.name) AS name, coalesce(fc.node, p.node, 'cpe') AS node, coalesce(fc.medium, p.medium) AS medium, coalesce(fc.band, p.band) AS band, coalesce(fc.flows, 0) AS flows, fc.lan50, fc.lan90, fc.wan50, p.ping50, w.rssi, w.retry_pct FROM (SELECT client FROM fc UNION SELECT client FROM p) k LEFT JOIN fc ON fc.client = k.client LEFT JOIN p ON p.client = k.client LEFT JOIN w ON w.client = k.client WHERE k.client IS NOT NULL AND coalesce(p.ip, '') NOT IN (SELECT coalesce(ip, '') FROM m) ), x AS ( SELECT n.node, m.ip, m.backhaul FROM (SELECT node FROM m WHERE mode = 'AP' UNION SELECT node FROM c WHERE node <> 'cpe') n LEFT JOIN m ON m.node = n.node ) , isp AS ( SELECT approx_percentile(rtt_ms, 0.5) AS v FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'icmp' AND status = 'ok' AND target_id = 'isp-hop1' ), ext AS ( SELECT x.node, x.backhaul, approx_percentile(s.rtt_ms, 0.5) AS v FROM x LEFT JOIN heimdall.samples s ON s.dst_ip = x.ip AND device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND s.kind = 'lan' AND s.status = 'ok' GROUP BY 1, 2 ), cat AS ( SELECT DISTINCT category FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'tcp' AND status = 'ok' AND category NOT IN ('infra', 'home') AND target_id NOT LIKE 'client/%' ) SELECT 'e:' || client AS id, 'client:' || client AS source, CASE WHEN node = 'cpe' THEN 'cpe' ELSE 'node:' || node END AS target, CASE WHEN coalesce(lan50, ping50) IS NULL THEN '' ELSE format('%.1f ms', coalesce(lan50, ping50)) END AS mainstat, CASE WHEN lan90 IS NULL THEN '' ELSE 'p90 ' || CASE WHEN lan90 IS NULL THEN '' ELSE format('%.1f ms', lan90) END END AS secondarystat, CASE WHEN coalesce(lan90, ping50) IS NULL THEN '#8e8e8e' WHEN coalesce(lan90, ping50) < 10 THEN '#73bf69' WHEN coalesce(lan90, ping50) < 30 THEN '#fade2a' ELSE '#f2495c' END AS color FROM c UNION ALL SELECT 'e:node:' || node, 'node:' || node, 'cpe', CASE WHEN v IS NULL THEN '' ELSE format('%.1f ms', v) END, coalesce(backhaul, ''), '#b877d9' FROM ext UNION ALL SELECT 'e:isp', 'cpe', 'isp', CASE WHEN v IS NULL THEN '' ELSE format('%.1f ms', v) END, 'first hop', '#5794f2' FROM isp UNION ALL SELECT 'e:internet', 'isp', 'internet', CASE WHEN (SELECT approx_percentile(wan50, 0.5) FROM c) IS NULL THEN '' ELSE format('%.1f ms', (SELECT approx_percentile(wan50, 0.5) FROM c)) END, 'clients, WAN p50', '#5794f2' UNION ALL SELECT 'e:cat:' || category, 'internet', 'cat:' || category, '', '', '#ff9830' FROM cat",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 16
+      },
+      "id": 1
+    },
+    {
+      "type": "table",
+      "title": "Clients",
+      "description": "lan: the client's reply to the server's SYN-ACK, measured at the CPE (Wi-Fi or Ethernet round trip). ping: the CPE's ping, best of a burst. wan: the server's answer to the client's SYN. total: what the client waits for a connection, about lan + wan.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "rssi"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dBm"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lan_p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lan_p90"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ping_p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "wan_p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_p50"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "retry_pct"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "WITH f AS ( SELECT ts_ms, json_extract_scalar(extra, '$.client') AS client, coalesce(json_extract_scalar(extra, '$.node'), 'cpe') AS node, json_extract_scalar(extra, '$.medium') AS medium, json_extract_scalar(extra, '$.band') AS band, json_extract_scalar(extra, '$.client_name') AS name, json_extract_scalar(extra, '$.proto') AS proto, status, CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan, CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'flow' ), fc AS ( SELECT client, max_by(node, ts_ms) AS node, max_by(medium, ts_ms) AS medium, max_by(band, ts_ms) AS band, max_by(name, ts_ms) AS name, count(*) AS flows, approx_percentile(lan, 0.5) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan50, approx_percentile(lan, 0.9) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan90, approx_percentile(wan, 0.5) FILTER (WHERE status = 'ok') AS wan50 FROM f GROUP BY 1 ), p AS ( SELECT substr(target_id, 5) AS client, max_by(dst_ip, ts_ms) AS ip, max_by(json_extract_scalar(extra, '$.client_name'), ts_ms) AS name, max_by(coalesce(json_extract_scalar(extra, '$.node'), 'cpe'), ts_ms) AS node, max_by(json_extract_scalar(extra, '$.medium'), ts_ms) AS medium, max_by(json_extract_scalar(extra, '$.band'), ts_ms) AS band, approx_percentile(rtt_ms, 0.5) FILTER (WHERE status = 'ok') AS ping50 FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'lan' GROUP BY 1 ), w AS ( SELECT json_extract_scalar(extra, '$.client') AS client, avg(CAST(json_extract_scalar(extra, '$.rssi') AS double)) AS rssi, 100.0 * sum(CAST(json_extract_scalar(extra, '$.tx_retries') AS double)) / nullif(sum(CAST(json_extract_scalar(extra, '$.tx_sent') AS double)), 0) AS retry_pct FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'wifi_sta' GROUP BY 1 ), m AS ( SELECT json_extract_scalar(extra, '$.node') AS node, max_by(dst_ip, ts_ms) AS ip, max_by(json_extract_scalar(extra, '$.node_mode'), ts_ms) AS mode, max_by(json_extract_scalar(extra, '$.backhaul'), ts_ms) AS backhaul, max_by(json_extract_scalar(extra, '$.parent'), ts_ms) AS parent FROM heimdall.samples WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') AND ts_ms BETWEEN ${__from} AND ${__to} AND kind = 'mesh_node' GROUP BY 1 ), c AS ( SELECT k.client, coalesce(fc.name, p.name) AS name, coalesce(fc.node, p.node, 'cpe') AS node, coalesce(fc.medium, p.medium) AS medium, coalesce(fc.band, p.band) AS band, coalesce(fc.flows, 0) AS flows, fc.lan50, fc.lan90, fc.wan50, p.ping50, w.rssi, w.retry_pct FROM (SELECT client FROM fc UNION SELECT client FROM p) k LEFT JOIN fc ON fc.client = k.client LEFT JOIN p ON p.client = k.client LEFT JOIN w ON w.client = k.client WHERE k.client IS NOT NULL AND coalesce(p.ip, '') NOT IN (SELECT coalesce(ip, '') FROM m) ), x AS ( SELECT n.node, m.ip, m.backhaul FROM (SELECT node FROM m WHERE mode = 'AP' UNION SELECT node FROM c WHERE node <> 'cpe') n LEFT JOIN m ON m.node = n.node ) SELECT coalesce(name, client) AS client, client AS id, node, coalesce(band, medium) AS link, round(rssi) AS rssi, lan50 AS lan_p50, lan90 AS lan_p90, ping50 AS ping_p50, wan50 AS wan_p50, coalesce(lan50, ping50) + wan50 AS total_p50, retry_pct, flows FROM c ORDER BY flows DESC",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 10
+      },
+      "id": 2
+    }
+  ]
+}

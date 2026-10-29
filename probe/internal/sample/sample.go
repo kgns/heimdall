@@ -29,6 +29,9 @@ const (
 	// and of one radio.
 	KindWiFiSta   Kind = "wifi_sta"
 	KindWiFiRadio Kind = "wifi_radio"
+	// KindMeshNode is one node of the EasyMesh network: the CPE or an
+	// extender, with its address and backhaul.
+	KindMeshNode  Kind = "mesh_node"
 	KindDNSHealth Kind = "dnshealth"
 	KindClock     Kind = "clock"
 	KindEvent     Kind = "event"

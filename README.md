@@ -99,6 +99,7 @@ Context collectors record what can explain a latency change:
 | `flow` | every TCP and QUIC handshake of a LAN client, split into LAN and WAN parts (see [LAN clients](#lan-clients)) | per connection |
 | `wifi_sta` | per Wi-Fi client: signal, noise, PHY rates, retries, power save, from `wl` or the mesh topology | 10 s |
 | `wifi_radio` | per radio: channel, busy and interference shares (`chanim_stats`), frame and retry counters | 10 s |
+| `mesh_node` | per EasyMesh node (the CPE, extenders): address, mode, parent and backhaul | 10 s |
 | `dnshealth` | PID, memory and container memory limit/OOM count of dnsmasq and dnscrypt-proxy | 30 s |
 | `clock` | SNTP offset of the local clock; the clock is never changed | 60 s |
 
@@ -149,7 +150,9 @@ per-radio statistics, and reads the EasyMesh topology the CPE writes to
 `/tmp/zy1905.json` for the clients of mesh extenders. An extender reports
 the signal it receives from a client, which reads about 20 dB below what
 the client itself sees, so extender clients are judged by link rate rather
-than signal. LAN pings are sent in bursts (`collectors.lan.burst`): a Wi-Fi
+than signal. With `collectors.lan.hostnames` the probe adds each client's DHCP hostname
+(`client_name`) from the CPE's lease file, for dashboards on your own
+network. LAN pings are sent in bursts (`collectors.lan.burst`): a Wi-Fi
 client in power save answers the first only after it wakes for a beacon,
 and the sample keeps the best of the rest.
 
@@ -214,6 +217,7 @@ the UI are lost on every deploy, so change dashboards in the generator.
 | service | what happens on one service's paths? Per-destination RTT and loss, HTTPS phases, edges, failures, destination changes |
 | network | access network, DNS, LAN and probe health |
 | LAN clients | is it the home network or the internet? Per client LAN and WAN parts, signal, retries, radio airtime, Wi-Fi events, and the heimdall-client cross-check |
+| topology | where is the time spent? A graph from every client through its mesh node and the CPE to the ISP and the internet, with each client's LAN round trip and WAN part, coloured by LAN p90, and a table of all clients |
 
 The record's address is set by `heimdall-dnssync` (`terraform/dnssync.tf`)
 because the task's public IP changes on each deploy. The name is a direct

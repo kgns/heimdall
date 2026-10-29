@@ -1459,6 +1459,189 @@ def clients() -> dict[str, Any]:
     return d
 
 
+# Per LAN client over the range: where it is attached, the LAN part of its
+# TCP handshakes, its ping, the WAN part of its connections and its signal.
+# Clients that opened no connection still appear through their pings. The
+# mesh extenders themselves answer pings like clients and are left out; x
+# lists the extenders from the mesh topology and any a client was seen
+# behind. Queries are collapsed onto one line, so they hold no SQL comments.
+TOPO_CLIENTS = """
+f AS (
+  SELECT ts_ms, json_extract_scalar(extra, '$.client') AS client,
+    coalesce(json_extract_scalar(extra, '$.node'), 'cpe') AS node,
+    json_extract_scalar(extra, '$.medium') AS medium, json_extract_scalar(extra, '$.band') AS band,
+    json_extract_scalar(extra, '$.client_name') AS name, json_extract_scalar(extra, '$.proto') AS proto, status,
+    CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan,
+    CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan
+  FROM heimdall.samples WHERE {R} AND kind = 'flow'
+),
+fc AS (
+  SELECT client, max_by(node, ts_ms) AS node, max_by(medium, ts_ms) AS medium, max_by(band, ts_ms) AS band,
+    max_by(name, ts_ms) AS name, count(*) AS flows,
+    approx_percentile(lan, 0.5) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan50,
+    approx_percentile(lan, 0.9) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan90,
+    approx_percentile(wan, 0.5) FILTER (WHERE status = 'ok') AS wan50
+  FROM f GROUP BY 1
+),
+p AS (
+  SELECT substr(target_id, 5) AS client, max_by(dst_ip, ts_ms) AS ip,
+    max_by(json_extract_scalar(extra, '$.client_name'), ts_ms) AS name,
+    max_by(coalesce(json_extract_scalar(extra, '$.node'), 'cpe'), ts_ms) AS node,
+    max_by(json_extract_scalar(extra, '$.medium'), ts_ms) AS medium,
+    max_by(json_extract_scalar(extra, '$.band'), ts_ms) AS band,
+    approx_percentile(rtt_ms, 0.5) FILTER (WHERE status = 'ok') AS ping50
+  FROM heimdall.samples WHERE {R} AND kind = 'lan' GROUP BY 1
+),
+w AS (
+  SELECT json_extract_scalar(extra, '$.client') AS client,
+    avg(CAST(json_extract_scalar(extra, '$.rssi') AS double)) AS rssi,
+    100.0 * sum(CAST(json_extract_scalar(extra, '$.tx_retries') AS double))
+      / nullif(sum(CAST(json_extract_scalar(extra, '$.tx_sent') AS double)), 0) AS retry_pct
+  FROM heimdall.samples WHERE {R} AND kind = 'wifi_sta' GROUP BY 1
+),
+m AS (
+  SELECT json_extract_scalar(extra, '$.node') AS node, max_by(dst_ip, ts_ms) AS ip,
+    max_by(json_extract_scalar(extra, '$.node_mode'), ts_ms) AS mode,
+    max_by(json_extract_scalar(extra, '$.backhaul'), ts_ms) AS backhaul,
+    max_by(json_extract_scalar(extra, '$.parent'), ts_ms) AS parent
+  FROM heimdall.samples WHERE {R} AND kind = 'mesh_node' GROUP BY 1
+),
+c AS (
+  SELECT k.client, coalesce(fc.name, p.name) AS name, coalesce(fc.node, p.node, 'cpe') AS node,
+    coalesce(fc.medium, p.medium) AS medium, coalesce(fc.band, p.band) AS band,
+    coalesce(fc.flows, 0) AS flows, fc.lan50, fc.lan90, fc.wan50, p.ping50, w.rssi, w.retry_pct
+  FROM (SELECT client FROM fc UNION SELECT client FROM p) k
+  LEFT JOIN fc ON fc.client = k.client LEFT JOIN p ON p.client = k.client LEFT JOIN w ON w.client = k.client
+  WHERE k.client IS NOT NULL AND coalesce(p.ip, '') NOT IN (SELECT coalesce(ip, '') FROM m)
+),
+x AS (
+  SELECT n.node, m.ip, m.backhaul
+  FROM (SELECT node FROM m WHERE mode = 'AP' UNION SELECT node FROM c WHERE node <> 'cpe') n
+  LEFT JOIN m ON m.node = n.node
+)
+"""
+# A node or edge stat in milliseconds, or "" when unknown.
+MS = "CASE WHEN {v} IS NULL THEN '' ELSE format('%.1f ms', {v}) END"
+# Green, yellow, red by a client's LAN round trip (p90 of handshakes, else
+# its ping): a few ms is normal for Wi-Fi, tens of ms is not.
+LAN_COLOR = (
+    "CASE WHEN coalesce(lan90, ping50) IS NULL THEN '#8e8e8e' WHEN coalesce(lan90, ping50) < 10 THEN '#73bf69'"
+    " WHEN coalesce(lan90, ping50) < 30 THEN '#fade2a' ELSE '#f2495c' END"
+)
+
+
+def ms(v: str) -> str:
+    return MS.format(v=v)
+
+
+def topology() -> dict[str, Any]:
+    nodes = f"""
+    WITH {TOPO_CLIENTS},
+    isp AS (
+      SELECT approx_percentile(rtt_ms, 0.5) AS v FROM heimdall.samples
+      WHERE {{R}} AND kind = 'icmp' AND status = 'ok' AND target_id = 'isp-hop1'
+    ),
+    cat AS (
+      SELECT category, approx_percentile(rtt_ms, 0.5) AS v, count(DISTINCT service) AS services
+      FROM heimdall.samples WHERE {{R}} AND kind = 'tcp' AND status = 'ok' AND {{S}} AND target_id NOT LIKE 'client/%'
+      GROUP BY 1
+    )
+    SELECT 'internet' AS id, 'Internet' AS title, 'servers clients reached' AS subtitle,
+      {ms("(SELECT approx_percentile(wan50, 0.5) FROM c)")} AS mainstat, 'clients, WAN p50' AS secondarystat,
+      '#5794f2' AS color
+    UNION ALL
+    SELECT 'isp', 'ISP', 'first hop', {ms("v")}, 'CPE to ISP', '#5794f2' FROM isp
+    UNION ALL
+    SELECT 'cpe', 'CPE', 'router', format('%d clients', (SELECT count(*) FROM c)), '', '#b877d9'
+    UNION ALL
+    SELECT 'node:' || node, node, 'mesh extender', coalesce(backhaul, ''), '', '#b877d9' FROM x
+    UNION ALL
+    SELECT 'client:' || client, coalesce(name, client),
+      concat_ws(' ', coalesce(band, medium), CASE WHEN rssi IS NULL THEN NULL ELSE format('%.0f dBm', rssi) END),
+      {ms("coalesce(lan50, ping50)")}, CASE WHEN wan50 IS NULL THEN '' ELSE 'wan ' || {ms("wan50")} END,
+      {LAN_COLOR}
+    FROM c
+    UNION ALL
+    SELECT 'cat:' || category, category, format('%d services, CPE probe', services), {ms("v")}, 'TCP connect p50',
+      '#ff9830' FROM cat
+    """
+    edges = f"""
+    WITH {TOPO_CLIENTS},
+    isp AS (
+      SELECT approx_percentile(rtt_ms, 0.5) AS v FROM heimdall.samples
+      WHERE {{R}} AND kind = 'icmp' AND status = 'ok' AND target_id = 'isp-hop1'
+    ),
+    ext AS (
+      SELECT x.node, x.backhaul, approx_percentile(s.rtt_ms, 0.5) AS v
+      FROM x LEFT JOIN heimdall.samples s ON s.dst_ip = x.ip AND {{R}} AND s.kind = 'lan' AND s.status = 'ok'
+      GROUP BY 1, 2
+    ),
+    cat AS (
+      SELECT DISTINCT category FROM heimdall.samples
+      WHERE {{R}} AND kind = 'tcp' AND status = 'ok' AND {{S}} AND target_id NOT LIKE 'client/%'
+    )
+    SELECT 'e:' || client AS id, 'client:' || client AS source,
+      CASE WHEN node = 'cpe' THEN 'cpe' ELSE 'node:' || node END AS target,
+      {ms("coalesce(lan50, ping50)")} AS mainstat,
+      CASE WHEN lan90 IS NULL THEN '' ELSE 'p90 ' || {ms("lan90")} END AS secondarystat,
+      {LAN_COLOR} AS color
+    FROM c
+    UNION ALL
+    SELECT 'e:node:' || node, 'node:' || node, 'cpe', {ms("v")}, coalesce(backhaul, ''), '#b877d9' FROM ext
+    UNION ALL
+    SELECT 'e:isp', 'cpe', 'isp', {ms("v")}, 'first hop', '#5794f2' FROM isp
+    UNION ALL
+    SELECT 'e:internet', 'isp', 'internet', {ms("(SELECT approx_percentile(wan50, 0.5) FROM c)")},
+      'clients, WAN p50', '#5794f2'
+    UNION ALL
+    SELECT 'e:cat:' || category, 'internet', 'cat:' || category, '', '', '#ff9830' FROM cat
+    """
+    graph = {
+        "type": "nodeGraph",
+        "title": "Topology: clients to the CPE, the CPE to the internet",
+        "description": "Client nodes show the LAN round trip (p50 of their TCP handshakes, else their ping) and the "
+        "WAN part of their connections, coloured by LAN p90: green under 10 ms, yellow under 30 ms, red above. "
+        "Edges carry the same LAN and WAN figures; category nodes show the CPE's own TCP probes.",
+        "datasource": DS,
+        "options": {"layoutAlgorithm": "layered", "nodes": {}, "edges": {}, "zoomMode": "cooperative"},
+        "targets": [target(nodes, TABLE, "nodes"), target(edges, TABLE, "edges")],
+    }
+    L = Layout()
+    p = [
+        L.place(graph, 24, 16),
+        L.place(
+            table(
+                "Clients",
+                f"""
+                WITH {TOPO_CLIENTS}
+                SELECT coalesce(name, client) AS client, client AS id, node, coalesce(band, medium) AS link,
+                  round(rssi) AS rssi, lan50 AS lan_p50, lan90 AS lan_p90, ping50 AS ping_p50, wan50 AS wan_p50,
+                  coalesce(lan50, ping50) + wan50 AS total_p50, retry_pct, flows
+                FROM c ORDER BY flows DESC
+                """,
+                "lan: the client's reply to the server's SYN-ACK, measured at the CPE (Wi-Fi or Ethernet round "
+                "trip). ping: the CPE's ping, best of a burst. wan: the server's answer to the client's SYN. "
+                "total: what the client waits for a connection, about lan + wan.",
+                units={
+                    "rssi": "dBm",
+                    "lan_p50": "ms",
+                    "lan_p90": "ms",
+                    "ping_p50": "ms",
+                    "wan_p50": "ms",
+                    "total_p50": "ms",
+                    "retry_pct": "percent",
+                },
+            ),
+            24,
+            10,
+        ),
+    ]
+    d = dashboard("heimdall-topology", "heimdall / topology", p, [DEVICE])
+    d["time"] = {"from": "now-30m", "to": "now"}
+    d["refresh"] = "1m"
+    return d
+
+
 def main() -> None:
     OUT.mkdir(exist_ok=True)
     for name, build in (
@@ -1467,6 +1650,7 @@ def main() -> None:
         ("network", network),
         ("daily", daily),
         ("clients", clients),
+        ("topology", topology),
     ):
         (OUT / f"{name}.json").write_text(json.dumps(build(), indent=2) + "\n")
 

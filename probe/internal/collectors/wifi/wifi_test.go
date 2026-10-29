@@ -134,8 +134,15 @@ func TestCollectorPoll(t *testing.T) {
 		}
 	}
 	// One local station, four extender Wi-Fi clients, one radio.
-	if kinds[sample.KindWiFiSta] != 5 || kinds[sample.KindWiFiRadio] != 1 || events["wifi_join"] != 5 {
+	if kinds[sample.KindWiFiSta] != 5 || kinds[sample.KindWiFiRadio] != 1 || events["wifi_join"] != 5 || kinds[sample.KindMeshNode] != 2 {
 		t.Fatalf("kinds %v events %v", kinds, events)
+	}
+	for _, s := range got {
+		if s.Kind == sample.KindMeshNode && s.Extra["node_mode"] == "AP" {
+			if s.TargetID != "mesh/WX5600-AP-17479" || s.DstIP != "192.168.1.2" || s.Extra["parent"] != cpeNode || s.Extra["backhaul"] != "IEEE 802.3u" {
+				t.Errorf("extender node %+v", s)
+			}
+		}
 	}
 	cx := c.ClientContext("id-" + sta)
 	if cx["node"] != cpeNode || cx["band"] != "5GHz" || cx["rssi"] != -34 {

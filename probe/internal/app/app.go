@@ -305,6 +305,14 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		}
 	}
 	coll := newCollectors(e, h.FS, nw, lookup, leaseFile)
+	if cfg.Collectors.LAN.Hostnames {
+		// Inside a container the CPE's dnsmasq process is not visible, so
+		// its usual lease file is the fallback.
+		coll.nameFile = "/var/dnsmasq/dnsmasq.leases"
+		if dm, err := sysinfo.DiscoverDnsmasq(h.FS); err == nil && dm != nil && dm.LeaseFile != "" {
+			coll.nameFile = dm.LeaseFile
+		}
+	}
 	if det != nil {
 		det.SetClientContext(coll.clientContext)
 	}

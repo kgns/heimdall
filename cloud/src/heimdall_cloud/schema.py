@@ -38,6 +38,7 @@ KINDS = frozenset(
         "flow",
         "wifi_sta",
         "wifi_radio",
+        "mesh_node",
         "dnshealth",
         "clock",
         "event",

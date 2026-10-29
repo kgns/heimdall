@@ -163,3 +163,13 @@ func TestSalt(t *testing.T) {
 		t.Fatal("empty path")
 	}
 }
+
+func TestReadLeasesHostname(t *testing.T) {
+	fsys := fstest.MapFS{"var/dnsmasq/dnsmasq.leases": {Data: []byte(
+		"1793300000 02:00:00:00:00:01 192.168.1.10 laptop 01:02:00:00:00:00:01\n" +
+			"1793300000 02:00:00:00:00:02 192.168.1.11 * *\n")}}
+	got, err := ReadLeases(fsys, "/var/dnsmasq/dnsmasq.leases")
+	if err != nil || len(got) != 2 || got[0].Hostname != "laptop" || got[1].Hostname != "" {
+		t.Fatalf("got %+v %v", got, err)
+	}
+}

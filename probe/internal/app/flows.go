@@ -183,6 +183,9 @@ func (c *collectors) clientContext(id string) map[string]any {
 	if cl, ok := c.lanClients[id]; ok && cl.Port != "" {
 		x["port"], x["medium"] = cl.Port, cl.Medium
 	}
+	if n, ok := c.names[id]; ok {
+		x["client_name"] = n
+	}
 	c.lanMu.Unlock()
 	if c.wifi != nil {
 		for k, v := range c.wifi.ClientContext(id) {

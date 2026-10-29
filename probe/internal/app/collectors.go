@@ -38,6 +38,10 @@ type collectors struct {
 	lanClients map[string]*lanClient
 	leaseFile  string
 	hasher     lan.Hasher
+	// nameFile is the lease file the client hostnames are read from, when
+	// collectors.lan.hostnames is on; names maps client ID to hostname.
+	nameFile string
+	names    map[string]string
 
 	// wifi adds where a client is attached on Wi-Fi; nil when the Wi-Fi
 	// collector is off.
@@ -240,6 +244,17 @@ func (c *collectors) discoverLAN() {
 		c.log.Warn("LAN discovery failed", "err", err)
 		return
 	}
+	var names map[string]string
+	if c.nameFile != "" {
+		if leases, err := lan.ReadLeases(c.fs, c.nameFile); err == nil {
+			names = map[string]string{}
+			for _, ls := range leases {
+				if ls.Hostname != "" {
+					names[c.hasher.ID(ls.MAC)] = ls.Hostname
+				}
+			}
+		}
+	}
 	seen := map[string]bool{}
 	// Events are emitted after the lock is released: the detector reads
 	// client context under its own lock, which takes this one.
@@ -251,6 +266,9 @@ func (c *collectors) discoverLAN() {
 	}()
 	c.lanMu.Lock()
 	defer c.lanMu.Unlock()
+	if names != nil {
+		c.names = names
+	}
 	for _, f := range found {
 		seen[f.ID] = true
 		cur, known := c.lanClients[f.ID]
@@ -338,6 +356,11 @@ func (c *collectors) pingLAN(ctx context.Context) {
 			for k, v := range c.wifiContext(cl.ID) {
 				s.Extra[k] = v
 			}
+			c.lanMu.Lock()
+			if n, ok := c.names[cl.ID]; ok {
+				s.Extra["client_name"] = n
+			}
+			c.lanMu.Unlock()
 			c.rec.Emit(s)
 		}()
 	}

@@ -183,6 +183,9 @@ collectors:
     # save answers the first only after it wakes for a beacon; the sample
     # keeps the best of the rest and lists all of them in burst_ms.
     burst: 1
+    # Report each client's DHCP hostname (client_name) from the CPE's lease
+    # file. Names often identify people; use on your own network only.
+    hostnames: false
   flows:                 # split each client connection into LAN and WAN round trips
     enabled: false
     interface: br0       # the LAN bridge; needs CAP_NET_RAW

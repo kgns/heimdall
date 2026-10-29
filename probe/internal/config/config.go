@@ -160,6 +160,11 @@ type LAN struct {
 	// file. Leases outlive the devices that took them, so this adds
 	// clients that are long gone and only ever time out.
 	UseLeases bool `yaml:"use_leases"`
+	// Hostnames reports the name each client gave in its DHCP request,
+	// from the CPE's lease file, with the client's samples. Names often
+	// identify people or devices, so this is for prototypes on one's own
+	// network only.
+	Hostnames bool `yaml:"hostnames"`
 	// Burst is the number of echo requests sent back to back to each
 	// client. A Wi-Fi client in power save holds the first until it wakes
 	// for the next beacon; the later ones measure the awake round trip.

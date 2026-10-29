@@ -346,6 +346,33 @@ func (c *Collector) pollMesh(ts int64, where map[string]location, ctxNew map[str
 	if err != nil {
 		return false
 	}
+	ids := make([]string, 0, len(m.Nodes))
+	for id := range m.Nodes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		n := m.Nodes[id]
+		name := n.Hostname
+		if name == "" {
+			name = n.ID
+		}
+		if n.Mode == "Router" {
+			name = cpeNode
+		}
+		x := map[string]any{"node": name, "hostname": n.Hostname, "node_mode": n.Mode, "ip": n.IP}
+		if n.Backhaul != "" {
+			x["backhaul"] = n.Backhaul
+		}
+		if p, ok := m.Nodes[n.Parent]; ok {
+			x["parent"] = p.Hostname
+			if p.Mode == "Router" {
+				x["parent"] = cpeNode
+			}
+		}
+		c.opt.Emit(sample.Sample{TS: ts, Kind: sample.KindMeshNode, Category: "home", Service: "wifi",
+			TargetID: "mesh/" + name, DstIP: n.IP, Status: sample.StatusOK, Extra: x})
+	}
 	for _, cl := range m.Clients {
 		node, ok := m.Nodes[cl.Node]
 		if !ok || node.Mode == "Router" {
