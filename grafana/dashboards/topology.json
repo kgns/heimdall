@@ -26,14 +26,14 @@
         "query": {
           "refId": "device",
           "format": 1,
-          "rawSQL": "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'heartbeat'",
+          "rawSQL": "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'lan'",
           "connectionArgs": {
             "region": "__default",
             "catalog": "__default",
             "database": "__default"
           }
         },
-        "definition": "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'heartbeat'",
+        "definition": "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'lan'",
         "refresh": 2,
         "sort": 1,
         "multi": false,
@@ -104,7 +104,7 @@
         "x": 0,
         "y": 0,
         "w": 24,
-        "h": 16
+        "h": 26
       },
       "id": 1
     },
@@ -229,9 +229,9 @@
       ],
       "gridPos": {
         "x": 0,
-        "y": 16,
+        "y": 26,
         "w": 24,
-        "h": 10
+        "h": 14
       },
       "id": 2
     }

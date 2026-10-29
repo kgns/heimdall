@@ -165,6 +165,12 @@ DEVICE = var(
     "device",
     "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'heartbeat'",
 )
+# Only CPE probes see LAN clients, so the client dashboards list the devices
+# that sent client pings today and do not open on a cloud probe.
+LAN_DEVICE = var(
+    "device",
+    "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'lan'",
+)
 CATEGORY = var(
     "category",
     "SELECT DISTINCT category FROM heimdall.samples WHERE device = '$device'"
@@ -1454,7 +1460,7 @@ def clients() -> dict[str, Any]:
             9,
         ),
     ]
-    d = dashboard("heimdall-clients", "heimdall / LAN clients", p, [DEVICE, CLIENT, CLIENT_DEVICE])
+    d = dashboard("heimdall-clients", "heimdall / LAN clients", p, [LAN_DEVICE, CLIENT, CLIENT_DEVICE])
     d["time"] = {"from": "now-3h", "to": "now"}
     return d
 
@@ -1608,7 +1614,7 @@ def topology() -> dict[str, Any]:
     }
     L = Layout()
     p = [
-        L.place(graph, 24, 16),
+        L.place(graph, 24, 26),
         L.place(
             table(
                 "Clients",
@@ -1633,10 +1639,10 @@ def topology() -> dict[str, Any]:
                 },
             ),
             24,
-            10,
+            14,
         ),
     ]
-    d = dashboard("heimdall-topology", "heimdall / topology", p, [DEVICE])
+    d = dashboard("heimdall-topology", "heimdall / topology", p, [LAN_DEVICE])
     d["time"] = {"from": "now-30m", "to": "now"}
     d["refresh"] = "1m"
     return d
