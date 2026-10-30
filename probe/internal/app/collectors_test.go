@@ -295,3 +295,25 @@ func TestClockCollector(t *testing.T) {
 		t.Fatalf("offset %v / %v", off, c.ClockOffset())
 	}
 }
+
+// On an extender the detector learns where a client is attached from the
+// bridge ports its connections arrive on.
+func TestBridgeClientContext(t *testing.T) {
+	c, _ := collectorEnv(t, collectorFixture(t), nil)
+	if cx := c.clientContext("aaa"); cx["node"] != nil {
+		t.Fatalf("CPE context names a node: %v", cx)
+	}
+	c.bridgeNode, c.bridgePorts = "WX5600-AP-1", map[string]string{}
+	c.notePort("aaa", "eth1")
+	c.notePort("bbb", "ra0")
+	for id, want := range map[string][3]any{
+		"aaa": {"WX5600-AP-1", "eth1", "wired"},
+		"bbb": {"WX5600-AP-1", "ra0", "wifi"},
+		"ccc": {"WX5600-AP-1", nil, nil},
+	} {
+		cx := c.clientContext(id)
+		if cx["node"] != want[0] || cx["port"] != want[1] || cx["medium"] != want[2] {
+			t.Errorf("%s: %v", id, cx)
+		}
+	}
+}

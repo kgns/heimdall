@@ -159,7 +159,7 @@ def test_format_client_incident():
     }
     text = format_message("home", ev, None, "https://g/")
     assert "client - aaa" in text and "weak Wi-Fi signal" in text
-    assert "flow/aaa: LAN part of its connections 40 ms vs 3 ms" in text
+    assert "- aaa: LAN part of its connections 40 ms vs 3 ms" in text
     assert "- client aaa: cpe, 5GHz, -80 dBm, 52 Mbit/s" in text
     assert "AWS control" not in text and text.endswith("https://g/d/heimdall-topology")
 
@@ -192,12 +192,14 @@ def test_format_extender_incidents():
             "targets": [
                 {"target_id": "flow/aaa", "kind": "flow", "current_ms": 30, "baseline_ms": 3, "reason": "latency"}
             ],
-            "clients": {"aaa": {"node": "WX5600-AP-17479", "band": "2.4GHz", "rssi": -50}},
+            "clients": {"aaa": {"node": "WX5600-AP-17479", "band": "2.4GHz", "rssi": -50, "client_name": "kagan-pc"}},
         }
     }
     text = format_message("ex7501-home (extender wx5600-ap-17479)", hop, None, "", extender=True)
-    assert text.startswith(":red_circle: *ex7501-home (extender wx5600-ap-17479)* incident: client - aaa")
-    assert "flow/aaa: hop between the extender and the client 30 ms vs 3 ms" in text
+    assert text.startswith(
+        ":red_circle: *ex7501-home (extender wx5600-ap-17479)* incident: client - kagan-pc (aaa) (ongoing for 11m)"
+    )
+    assert "- kagan-pc (aaa): hop between the extender and the client 30 ms vs 3 ms" in text
     assert "retransmissions on the access point's radio" in text
     backhaul = {
         "extra": {
@@ -296,3 +298,24 @@ def test_extender_incident_named_from_the_cpe(aws):
     )  # fmt: skip
     n({"device": "wx5600-ap-17479", "events": [start]})
     assert len(posts) == 1 and "- client kagan-pc (aaa): WX5600-AP-17479" in posts[0][1]
+    assert "incident: client - kagan-pc (aaa)" in posts[0][1]
+    end = ev(
+        "incident_end", scope="client", services=["aaa"], confirmed=True, duration_s=2040,
+        ended_ms=1_793_020_100_000, clients={"aaa": {}},
+    )  # fmt: skip
+    n({"device": "wx5600-ap-17479", "events": [end]})
+    assert len(posts) == 2 and posts[1][1].endswith("resolved after 34m: client incident - kagan-pc (aaa)")
+    item = table.get_item(Key={"device": "wx5600-ap-17479", "incident_id": start["extra"]["incident_id"]})["Item"]
+    assert item["ended_ms"] == 1_793_020_100_000
+
+
+def test_format_wired_and_unknown_clients():
+    def line(cx):
+        x = {"event": "incident_confirmed", "scope": "client", "cause": "wired_lan", "services": ["aaa"],
+             "clients": {"aaa": cx}}  # fmt: skip
+        return format_message("x", {"extra": x}, None, "", extender=True).splitlines()[-1]
+
+    assert line({"node": "WX5600-AP-17479", "medium": "wired", "port": "eth1", "client_name": "kagan-pc"}) == (
+        "- client kagan-pc (aaa): WX5600-AP-17479, wired (eth1)"
+    )
+    assert line({}) == "- client aaa"

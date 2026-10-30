@@ -42,6 +42,11 @@ type collectors struct {
 	// collectors.lan.hostnames is on; names maps client ID to hostname.
 	nameFile string
 	names    map[string]string
+	// bridgeNode is set on a probe that bridges its clients (an
+	// extender); bridgePorts maps client ID to the bridge member its
+	// connections last arrived on.
+	bridgeNode  string
+	bridgePorts map[string]string
 
 	// wifi adds where a client is attached on Wi-Fi; nil when the Wi-Fi
 	// collector is off.

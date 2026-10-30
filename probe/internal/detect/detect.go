@@ -148,6 +148,13 @@ type series struct {
 	cur       float64
 	curLoss   float64
 	reason    string
+
+	// onset is the start of the current run of degraded minutes, zero
+	// when the last minute with samples was normal; lastBad is the end of
+	// the last degraded minute. The window lags both by a few minutes, so
+	// they date an anomaly better than the ticks that start and end it.
+	onset   time.Time
+	lastBad time.Time
 }
 
 // tlsStat counts HTTPS attempts of a service over the last minutes, to spot
@@ -163,7 +170,12 @@ type Incident struct {
 	Cause    string
 	Service  string
 	Category string
+	// Started is when the incident was detected; Onset is the first
+	// degraded minute of its earliest member, and lastBad the end of the
+	// last degraded minute of any member so far.
 	Started  time.Time
+	Onset    time.Time
+	lastBad  time.Time
 	services []string
 	lastSent time.Time
 	// context is, for client and home incidents, where each client was
@@ -345,6 +357,18 @@ func rollInts(s []int) []int {
 	return s
 }
 
+// minuteDegraded applies the series' rule to one minute on its own.
+func minuteDegraded(sr *series, b bucket, r rule) bool {
+	if m := median32(b.values); !math.IsNaN(m) && m > sr.base*r.ratio && m-sr.base > r.delta {
+		return true
+	}
+	if sr.noLoss || b.lost == 0 {
+		return false
+	}
+	l := float64(b.lost) / float64(b.total)
+	return l >= sr.baseLoss+r.lossAbs && l >= 3*sr.baseLoss
+}
+
 // evaluate closes the open bucket of sr and updates its state, returning an
 // anomaly_start or anomaly_end event on a transition.
 func (d *Detector) evaluate(sr *series, now time.Time) (sample.Sample, bool) {
@@ -395,6 +419,19 @@ func (d *Detector) evaluate(sr *series, now time.Time) (sample.Sample, bool) {
 		}
 	}
 
+	// Minutes without samples neither break nor extend a run of degraded
+	// minutes.
+	if closed.total > 0 && sr.haveBase {
+		if minuteDegraded(sr, closed, r) {
+			if sr.onset.IsZero() {
+				sr.onset = now.Add(-time.Minute)
+			}
+			sr.lastBad = now
+		} else {
+			sr.onset = time.Time{}
+		}
+	}
+
 	// Learn from normal minutes only.
 	if closed.total > 0 && !sr.anomalous && !cond {
 		m := median32(closed.values)
@@ -415,6 +452,12 @@ func (d *Detector) evaluate(sr *series, now time.Time) (sample.Sample, bool) {
 		sr.hits++
 		if sr.hits >= enterTicks {
 			sr.anomalous, sr.misses, sr.since, sr.reason = true, 0, now, reason
+			if !sr.onset.IsZero() && sr.onset.Before(now) {
+				sr.since = sr.onset
+			}
+			if sr.lastBad.Before(sr.since) {
+				sr.lastBad = now
+			}
 			return d.anomalyEvent(sr, "anomaly_start", now), true
 		}
 	case !sr.anomalous:
@@ -441,8 +484,16 @@ func (d *Detector) anomalyEvent(sr *series, event string, now time.Time) sample.
 		"current_ms": round(sr.cur), "baseline_ms": round(sr.base),
 		"loss": round(sr.curLoss), "baseline_loss": round(sr.baseLoss),
 	}
+	if event == "anomaly_start" {
+		x["started_ms"] = sr.since.UnixMilli()
+	}
 	if event == "anomaly_end" {
-		x["duration_s"] = int64(now.Sub(sr.since).Seconds())
+		end := sr.lastBad
+		if end.Before(sr.since) {
+			end = now
+		}
+		x["started_ms"], x["ended_ms"] = sr.since.UnixMilli(), end.UnixMilli()
+		x["duration_s"] = int64(end.Sub(sr.since).Seconds())
 	}
 	return sample.Sample{
 		TS: now.UnixMilli(), Kind: sample.KindEvent, Status: sample.StatusOK, Category: sr.category,
@@ -554,6 +605,12 @@ func (d *Detector) correlate(now time.Time) []sample.Sample {
 		switch {
 		case w != nil && cur == nil:
 			w.ID, w.Started, w.lastSent = newID(), now, now
+			w.Onset, w.lastBad = now, now
+			for _, sr := range members[k] {
+				if sr.since.Before(w.Onset) {
+					w.Onset = sr.since
+				}
+			}
 			w.services = serviceList(members[k], w.Service)
 			if w.Scope == "client" || w.Scope == "home" {
 				w.services = clientList(members[k])
@@ -564,6 +621,7 @@ func (d *Detector) correlate(now time.Time) []sample.Sample {
 			d.incidents[k] = w
 			out = append(out, d.incidentEvent(w, "incident_start", members[k], now))
 		case w != nil:
+			cur.lastBad = lastBad(members[k], cur.lastBad, now)
 			svcs := serviceList(members[k], cur.Service)
 			if cur.Scope == "client" || cur.Scope == "home" {
 				svcs = clientList(members[k])
@@ -600,6 +658,20 @@ func sumLast(s []int, n int) int {
 		t += v
 	}
 	return t
+}
+
+// lastBad is the latest end of a degraded minute among an incident's
+// members, or now for an incident without series.
+func lastBad(ss []*series, prev, now time.Time) time.Time {
+	if len(ss) == 0 {
+		return now
+	}
+	for _, sr := range ss {
+		if sr.lastBad.After(prev) {
+			prev = sr.lastBad
+		}
+	}
+	return prev
 }
 
 func serviceList(ss []*series, fallback string) []string {
@@ -740,10 +812,21 @@ const maxTargetsInEvent = 12
 func (d *Detector) incidentEvent(inc *Incident, event string, ss []*series, now time.Time) sample.Sample {
 	x := map[string]any{
 		"event": event, "incident_id": inc.ID, "scope": inc.Scope, "cause": inc.Cause,
-		"services": inc.services, "started_ms": inc.Started.UnixMilli(), "confirmed": inc.confirmed,
+		"services": inc.services, "started_ms": inc.Onset.UnixMilli(), "detected_ms": inc.Started.UnixMilli(),
+		"confirmed": inc.confirmed,
 	}
-	if event == "incident_end" || event == "incident_confirmed" {
-		x["duration_s"] = int64(now.Sub(inc.Started).Seconds())
+	switch event {
+	case "incident_confirmed":
+		x["duration_s"] = int64(now.Sub(inc.Onset).Seconds())
+	case "incident_end":
+		// The end is the last degraded minute, not the tick that noticed
+		// the recovery a few minutes later.
+		end := inc.lastBad
+		if end.Before(inc.Onset) || end.After(now) {
+			end = now
+		}
+		x["ended_ms"] = end.UnixMilli()
+		x["duration_s"] = int64(end.Sub(inc.Onset).Seconds())
 	}
 	if len(ss) > 0 {
 		// The most degraded series first.
@@ -792,6 +875,8 @@ func (d *Detector) Flush(now time.Time) []sample.Sample {
 	sort.Strings(keys)
 	var out []sample.Sample
 	for _, k := range keys {
+		// Still degraded as far as anyone knows: it ends with the probe.
+		d.incidents[k].lastBad = now
 		ev := d.incidentEvent(d.incidents[k], "incident_end", nil, now)
 		ev.Extra["reason"] = "probe_stopped"
 		out = append(out, ev)

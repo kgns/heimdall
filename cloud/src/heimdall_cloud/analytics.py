@@ -799,7 +799,9 @@ def incidents(athena: Athena, day: date) -> list[dict[str, Any]]:
           arbitrary(json_extract_scalar(extra, '$.scope')) AS scope,
           arbitrary(json_extract_scalar(extra, '$.cause')) AS cause,
           max_by(json_format(json_extract(extra, '$.services')), ts_ms) AS services,
-          min(ts_ms) AS first_ms, max(CAST(json_extract_scalar(extra, '$.duration_s') AS bigint)) AS duration_s
+          coalesce(min(CAST(json_extract_scalar(extra, '$.started_ms') AS bigint)), min(ts_ms)) AS first_ms,
+          max_by(CAST(json_extract_scalar(extra, '$.duration_s') AS bigint), ts_ms)
+            FILTER (WHERE json_extract_scalar(extra, '$.duration_s') IS NOT NULL) AS duration_s
         FROM heimdall.samples
         WHERE {day_filter(day)} AND kind = 'event' AND json_extract_scalar(extra, '$.event') LIKE 'incident%'
         GROUP BY 1, 2

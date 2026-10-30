@@ -93,7 +93,13 @@ def client_label(client: str, cx: dict[str, Any]) -> str:
 
 
 def _client_line(client: str, cx: dict[str, Any]) -> str:
-    parts = [str(cx.get("node") or "?")]
+    """Where the client is attached, or its name alone when the probe knows
+    nothing about that."""
+    parts = []
+    if cx.get("node"):
+        parts.append(str(cx["node"]))
+    if cx.get("medium") == "wired":
+        parts.append(f"wired ({cx['port']})" if cx.get("port") else "wired")
     for key, fmt in (
         ("band", "{}"),
         ("rssi", "{} dBm"),
@@ -106,7 +112,13 @@ def _client_line(client: str, cx: dict[str, Any]) -> str:
         parts.append(f"{float(cx['tx_rate_mbps']):.0f} Mbit/s")
     if cx.get("backhaul"):
         parts.append(f"backhaul {cx['backhaul']}")
-    return f"- client {client_label(client, cx)}: " + ", ".join(parts)
+    line = f"- client {client_label(client, cx)}"
+    return f"{line}: " + ", ".join(parts) if parts else line
+
+
+def _labels(x: dict[str, Any]) -> dict[str, str]:
+    """The display label of each client in an incident's context."""
+    return {c: client_label(c, cx or {}) for c, cx in (x.get("clients") or {}).items()}
 
 
 def incident_events(samples: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -189,12 +201,14 @@ def format_message(
     are the hop between the extender and the client."""
     x = ev["extra"]
     name = x["event"]
-    services = ", ".join(x.get("services") or []) or "-"
+    # The services of a client or home incident are its clients.
+    labels = _labels(x)
+    services = ", ".join(labels.get(s, s) for s in x.get("services") or []) or "-"
     cause = CAUSES.get(x.get("cause", ""), x.get("cause", "unknown"))
     if name == "incident_end":
         return (
             f":large_green_circle: *{device}* resolved after {_fmt_duration(int(x.get('duration_s', 0)))}: "
-            f"{x.get('scope')} incident ({services})"
+            f"{x.get('scope')} incident - {services}"
         )
     icon = ":no_entry:" if x.get("cause") == "tls_blocked" else ":red_circle:"
     verb = "incident" if name in ("incident_start", "incident_confirmed") else "incident update"
@@ -209,7 +223,9 @@ def format_message(
             detail += f", loss {100 * float(t.get('loss', 0)):.0f}%"
         if home and t.get("kind") == "flow":
             what = "hop between the extender and the client" if extender else "LAN part of its connections"
-            lines.append(f"- {t.get('target_id')}: {what} {detail}")
+            target = str(t.get("target_id") or "")
+            client = target.removeprefix("flow/")
+            lines.append(f"- {labels.get(client, target)}: {what} {detail}")
         elif home:
             lines.append(f"- {t.get('target_id')} ({t.get('kind')}, {t.get('dst_ip')}): {detail}")
         else:
@@ -369,7 +385,7 @@ class Notifier:
                 ExpressionAttributeNames={"#s": "status", "#t": "ttl"},
                 ExpressionAttributeValues={
                     ":c": "closed",
-                    ":e": int(ev.get("ts_ms") or 0),
+                    ":e": int(x.get("ended_ms") or ev.get("ts_ms") or 0),
                     ":d": int(x.get("duration_s") or 0),
                     ":ttl": ttl,
                 },

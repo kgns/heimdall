@@ -108,6 +108,9 @@ func (c *collectors) startFlows(ctx context.Context) (*flowSampler, error) {
 	fs := &flowSampler{coll: c, cfg: fcfg, classifier: c.flowClassifier(), now: time.Now}
 	if bridge {
 		fs.node = c.cfg.Collectors.WiFi.Node
+		c.lanMu.Lock()
+		c.bridgeNode, c.bridgePorts = fs.node, map[string]string{}
+		c.lanMu.Unlock()
 	}
 	opt := flows.DefaultTrackerOptions()
 	opt.Local = newLocalAddrs(fcfg.Interface).contains
@@ -228,20 +231,33 @@ func (fs *flowSampler) sample(f flows.Flow) sample.Sample {
 	if f.SNI != "" {
 		x["sni"] = f.SNI
 	}
+	if fs.node != "" {
+		if p := fs.port(f.ClientMAC); p != "" {
+			fs.coll.notePort(id, p)
+		}
+	}
 	for k, v := range fs.coll.clientContext(id) {
 		x[k] = v
 	}
-	if fs.node != "" {
-		x["node"] = fs.node
-		if p := fs.port(f.ClientMAC); p != "" {
-			x["port"] = p
-			if _, ok := x["medium"]; !ok {
-				x["medium"] = lan.Medium(p)
-			}
-		}
-	}
 	s.Extra = x
 	return s
+}
+
+// maxBridgePorts bounds the clients whose bridge port is remembered.
+const maxBridgePorts = 512
+
+// notePort records the bridge member a client's connection arrived on, so
+// that the detector's client context knows it too.
+func (c *collectors) notePort(id, port string) {
+	c.lanMu.Lock()
+	defer c.lanMu.Unlock()
+	if c.bridgePorts == nil {
+		return
+	}
+	if _, ok := c.bridgePorts[id]; !ok && len(c.bridgePorts) >= maxBridgePorts {
+		clear(c.bridgePorts)
+	}
+	c.bridgePorts[id] = port
 }
 
 // clientContext describes where a LAN client is attached, for the samples
@@ -254,6 +270,15 @@ func (c *collectors) clientContext(id string) map[string]any {
 	}
 	if n, ok := c.names[id]; ok {
 		x["client_name"] = n
+	}
+	if c.bridgeNode != "" {
+		x["node"] = c.bridgeNode
+		if p := c.bridgePorts[id]; p != "" {
+			x["port"] = p
+			if _, ok := x["medium"]; !ok {
+				x["medium"] = lan.Medium(p)
+			}
+		}
 	}
 	c.lanMu.Unlock()
 	if c.wifi != nil {

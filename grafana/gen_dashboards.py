@@ -289,6 +289,8 @@ WITH e AS (
     json_extract_scalar(extra, '$.scope') AS scope, json_extract_scalar(extra, '$.cause') AS cause,
     array_join(CAST(json_extract(extra, '$.services') AS array(varchar)), ', ') AS services,
     CAST(json_extract_scalar(extra, '$.duration_s') AS bigint) AS duration_s,
+    CAST(json_extract_scalar(extra, '$.started_ms') AS bigint) AS started_ms,
+    CAST(json_extract_scalar(extra, '$.ended_ms') AS bigint) AS ended_ms,
     CAST(json_extract_scalar(extra, '$.anomalous_series') AS integer) AS series,
     json_extract_scalar(extra, '$.targets[0].target_id') AS top_target,
     CAST(json_extract_scalar(extra, '$.targets[0].current_ms') AS double) AS top_current_ms,
@@ -298,10 +300,12 @@ WITH e AS (
 ),
 i AS (
   SELECT id,
-    CAST(from_unixtime(min(ts_ms) FILTER (WHERE ev = 'incident_start') / 1000.0) AS timestamp) AS start_time,
-    CAST(from_unixtime(max(ts_ms) FILTER (WHERE ev = 'incident_end') / 1000.0) AS timestamp) AS end_time,
+    CAST(from_unixtime(coalesce(min(started_ms), min(ts_ms) FILTER (WHERE ev = 'incident_start')) / 1000.0)
+      AS timestamp) AS start_time,
+    CAST(from_unixtime(max(coalesce(ended_ms, ts_ms)) FILTER (WHERE ev = 'incident_end') / 1000.0) AS timestamp)
+      AS end_time,
     arbitrary(scope) AS scope, arbitrary(cause) AS cause, max_by(services, ts_ms) AS services,
-    max(duration_s) AS duration_s, max(series) AS series,
+    max_by(duration_s, ts_ms) FILTER (WHERE duration_s IS NOT NULL) AS duration_s, max(series) AS series,
     max_by(top_target, ts_ms) FILTER (WHERE top_target IS NOT NULL) AS top_target,
     max_by(top_current_ms, ts_ms) FILTER (WHERE top_target IS NOT NULL) AS top_current_ms,
     max_by(top_baseline_ms, ts_ms) FILTER (WHERE top_target IS NOT NULL) AS top_baseline_ms
@@ -1945,6 +1949,8 @@ def topology() -> dict[str, Any]:
                     json_extract_scalar(extra, '$.cause') AS cause,
                     CAST(json_extract(extra, '$.services') AS array(varchar)) AS services,
                     CAST(json_extract_scalar(extra, '$.duration_s') AS bigint) AS duration_s,
+                    CAST(json_extract_scalar(extra, '$.started_ms') AS bigint) AS started_ms,
+                    CAST(json_extract_scalar(extra, '$.ended_ms') AS bigint) AS ended_ms,
                     CAST(json_extract_scalar(extra, '$.confirmed') AS boolean) AS confirmed,
                     CAST(json_extract_scalar(extra, '$.targets[0].current_ms') AS double) AS cur,
                     CAST(json_extract_scalar(extra, '$.targets[0].baseline_ms') AS double) AS base
@@ -1954,10 +1960,11 @@ def topology() -> dict[str, Any]:
                 ),
                 i AS (
                   SELECT id, arbitrary(device) AS device,
-                    min(ts_ms) FILTER (WHERE ev = 'incident_start') AS start_ms,
-                    max(ts_ms) FILTER (WHERE ev = 'incident_end') AS end_ms,
+                    coalesce(min(started_ms), min(ts_ms) FILTER (WHERE ev = 'incident_start')) AS start_ms,
+                    max(coalesce(ended_ms, ts_ms)) FILTER (WHERE ev = 'incident_end') AS end_ms,
                     arbitrary(scope) AS scope, max_by(cause, ts_ms) AS cause, max_by(services, ts_ms) AS services,
-                    max(duration_s) AS duration_s, bool_or(coalesce(confirmed, true)) AS confirmed,
+                    max_by(duration_s, ts_ms) FILTER (WHERE duration_s IS NOT NULL) AS duration_s,
+                    bool_or(coalesce(confirmed, true)) AS confirmed,
                     max_by(cur, ts_ms) FILTER (WHERE cur IS NOT NULL) AS cur,
                     max_by(base, ts_ms) FILTER (WHERE base IS NOT NULL) AS base
                   FROM e GROUP BY id

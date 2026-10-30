@@ -395,8 +395,8 @@ func TestIncidentConfirmation(t *testing.T) {
 		t.Fatalf("no confirmation: %v", ev)
 	}
 	c := ev["incident_confirmed"][0]
-	started := time.UnixMilli(c.Extra["started_ms"].(int64))
-	if got := time.UnixMilli(c.TS).Sub(started); got < 10*time.Minute || got > 11*time.Minute {
+	detected := time.UnixMilli(c.Extra["detected_ms"].(int64))
+	if got := time.UnixMilli(c.TS).Sub(detected); got < 10*time.Minute || got > 11*time.Minute {
 		t.Fatalf("confirmed after %v", got)
 	}
 	ev = run(d, 70, 80, a, b)
@@ -414,5 +414,57 @@ func TestAccessIncidentConfirmedAtOnce(t *testing.T) {
 	ev := run(d, 30, 34, slow)
 	if len(ev["incident_start"]) != 1 || ev["incident_start"][0].Extra["confirmed"] != true {
 		t.Fatalf("%v", ev["incident_start"])
+	}
+}
+
+func TestIncidentTimesFollowDegradedMinutes(t *testing.T) {
+	d := New(DefaultOptions())
+	a := icmp("netflix/www.netflix.com", "netflix", "streaming", 20)
+	b := icmp("youtube/www.youtube.com", "youtube", "streaming", 15)
+	run(d, 0, 30, a, b)
+	slow := a
+	slow.rtt = 80
+	ev := run(d, 30, 50, slow, b)
+	ev2 := run(d, 50, 60, a, b)
+	if len(ev["incident_start"]) != 1 || len(ev2["incident_end"]) != 1 {
+		t.Fatalf("%v %v", ev, ev2)
+	}
+	start, end := ev["incident_start"][0], ev2["incident_end"][0]
+	if got := time.UnixMilli(start.Extra["started_ms"].(int64)); !got.Equal(t0.Add(30 * time.Minute)) {
+		t.Errorf("started %v, want the first slow minute", got.Sub(t0))
+	}
+	if got := time.UnixMilli(start.Extra["detected_ms"].(int64)); !got.After(t0.Add(31 * time.Minute)) {
+		t.Errorf("detected %v, before the window could see it", got.Sub(t0))
+	}
+	if got := time.UnixMilli(end.Extra["ended_ms"].(int64)); !got.Equal(t0.Add(50 * time.Minute)) {
+		t.Errorf("ended %v, want the end of the last slow minute", got.Sub(t0))
+	}
+	if got := end.Extra["duration_s"].(int64); got != 20*60 {
+		t.Errorf("duration %ds, want 1200", got)
+	}
+	if !time.UnixMilli(end.TS).After(t0.Add(51 * time.Minute)) {
+		t.Errorf("end event at %v, before the window recovered", time.UnixMilli(end.TS).Sub(t0))
+	}
+}
+
+// A client that stops talking ends its incident at its last slow minute,
+// not when the empty window lets the incident go.
+func TestClientIncidentEndsAtLastSlowMinute(t *testing.T) {
+	d := New(DefaultOptions())
+	a := flow("aaa", 2)
+	run(d, 0, 30, a)
+	slow := a
+	slow.extra = map[string]any{"proto": "tcp", "client": "aaa", "lan_ms": 40.0}
+	ev := run(d, 30, 45, slow)
+	ev2 := run(d, 45, 60)
+	if len(ev["incident_start"]) != 1 || len(ev2["incident_end"]) != 1 {
+		t.Fatalf("%v %v", ev, ev2)
+	}
+	end := ev2["incident_end"][0]
+	if got := time.UnixMilli(end.Extra["ended_ms"].(int64)); !got.Equal(t0.Add(45 * time.Minute)) {
+		t.Errorf("ended %v", got.Sub(t0))
+	}
+	if got := end.Extra["duration_s"].(int64); got != 15*60 {
+		t.Errorf("duration %ds, want 900", got)
 	}
 }
