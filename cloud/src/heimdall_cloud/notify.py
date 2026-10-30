@@ -294,14 +294,15 @@ class Notifier:
         from boto3.dynamodb.conditions import Attr, Key
 
         since_ms = int((self.now() - REPEAT_WINDOW_S) * 1000)
+        # A filter cannot test the sort key (incident_id), so the incident
+        # itself is left out here.
         resp = self.table.query(
             KeyConditionExpression=Key("device").eq(device),
             FilterExpression=Attr("signature").eq(self.signature(x))
             & Attr("notified").eq(True)
-            & Attr("posted_ms").gte(since_ms)
-            & Attr("incident_id").ne(x.get("incident_id", "")),
+            & Attr("posted_ms").gte(since_ms),
         )
-        return bool(resp.get("Items"))
+        return any(i.get("incident_id") != x.get("incident_id") for i in resp.get("Items", []))
 
     def mark_posted(self, device: str, incident_id: str) -> None:
         self.table.update_item(
