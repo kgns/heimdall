@@ -66,15 +66,30 @@ CPE's own TCP probe of the same services; above 1.3 the client reaches other ser
 flags summarise what stands out.
 - client_crosscheck: a laptop running heimdall-client, its own TCP connect times matched with the CPE's \
 split of the same connections. gap: what the laptop sees beyond the CPE's WAN plus LAN parts.
+- For clients of a mesh extender that runs its own probe: hop_p50/hop_p90 are the same reply time measured \
+at the extender, the hop between the extender and the client alone, so lan minus hop is what the backhaul \
+and the extender add; ext_rssi_avg is the signal the extender's radio receives (judge it like the CPE's: \
+below -75 dBm is weak); flags slow_extender_hop and slow_backhaul say which side is slow. extenders: each \
+extender's ping to the CPE over the day (backhaul p50/p95/loss). Incidents carry seen_by: cpe or extender.
+- attribution: the round trip split into segments, in path order: wifi (the LAN part of the CPE's own \
+clients), ext_hop (extender to its clients), backhaul (extender to CPE), access (first hop into the ISP), \
+beyond_isp (the servers' answer minus the access). latency_budget_ms: each segment's median over the day, \
+where a typical connection's time goes. degraded_hours_by_cause: how many hours each part was to blame \
+for (a segment's median 30% and a few ms above its day median; the segment adding the most ms is \
+blamed; beyond the ISP, the AWS control splits isp_path from service). degraded_hours: the worst \
+hours in local time with the milliseconds each segment added.
 - trend: the same headline numbers for the previous days, oldest first."""
 
 INSTRUCTIONS = """Write the report in Markdown, at most about 450 words, with these parts:
-1. Verdict: one or two sentences. Was there an ISP-side problem, a service-side problem, or nothing notable?
+1. Verdict: one or two sentences. Was there a problem in the home network, on the ISP's side (access or \
+path), on a service's side, or nothing notable? Base it on attribution when present, and say where a \
+typical connection's time goes (latency_budget_ms).
 2. Findings: bullet points, most important first: evening congestion, loss, ISP-side versus service-side \
 degraded hours, peering and transit observations, incidents, comparison with other lines of the ISP.
 3. Home network: when lan_clients is present, which clients have a slow or unstable LAN part and why \
-(signal, retries, roaming, extender), and whether any client's internet part differs from the CPE's own \
-measurements. Mention the client_crosscheck result when present. Skip this part when there are no clients.
+(signal, retries, roaming, the extender's hop or its backhaul), and whether any client's internet part \
+differs from the CPE's own measurements. Mention the extenders' backhaul and the client_crosscheck result \
+when present. Skip this part when there are no clients.
 4. Worth raising with the ISP: only concrete, evidenced items (service, time, numbers, AS), or "nothing".
 Use the device name and the date in the title."""
 
@@ -95,6 +110,8 @@ def headline(summary: dict[str, Any], device: str) -> dict[str, Any]:
             for c in d.get("lan_clients", [])
             if c.get("flags")
         ][:5],
+        "latency_budget_ms": (d.get("attribution") or {}).get("latency_budget_ms"),
+        "degraded_hours_by_cause": (d.get("attribution") or {}).get("degraded_hours_by_cause"),
     }
 
 
@@ -119,6 +136,10 @@ def fallback_report(summary: dict[str, Any], device: str) -> str:
     if h["loss"]:
         lines.append("- Loss: " + ", ".join(f"{x['service']} {x['loss_pct']}%" for x in h["loss"]))
     lines.append(f"- Incidents detected: {h['incidents']}")
+    if budget := h.get("latency_budget_ms"):
+        lines.append("- Where the time goes (day medians): " + ", ".join(f"{k} {v} ms" for k, v in budget.items()))
+    if causes := h.get("degraded_hours_by_cause"):
+        lines.append("- Degraded hours by cause: " + ", ".join(f"{k} {v}" for k, v in causes.items()))
     for c in h["lan_clients_flagged"]:
         lines.append(f"- LAN client {c['client']} on {c['node']}: {', '.join(c['flags'])}")
     if k := h.get("k_root"):

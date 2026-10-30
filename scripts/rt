@@ -3,41 +3,45 @@
 # control socket that the operator opens with `rt connect` (interactive
 # login) and closes with `rt disconnect`; every other command fails fast
 # when the socket is not open.
+#
+# For the mesh extender, set HEIMDALL_ROUTER and HEIMDALL_SSH_SOCK to it,
+# HEIMDALL_ARCH=extender-arm64, HEIMDALL_SCRIPTS=extender and
+# HEIMDALL_CONFIG=configs/local/extender.yaml. Its scripts include a
+# supervisor, which start and stop then use, and `boot install` makes it
+# start at every boot.
 set -euo pipefail
-
 ROUTER="${HEIMDALL_ROUTER:-root@192.168.1.1}"
 SOCK="${HEIMDALL_SSH_SOCK:-$HOME/.ssh/heimdall-router.sock}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ARCH="${HEIMDALL_ARCH:-arm64}"
-# An extender has no /misc; HEIMDALL_REMOTE=/tmp/heimdall keeps the probe
-# in RAM there, gone after a reboot.
 REMOTE="${HEIMDALL_REMOTE:-/misc/heimdall}"
+# The helper scripts copied with the probe: scripts/<SCRIPTS>.
+SCRIPTS="${HEIMDALL_SCRIPTS:-router}"
 SAMPLES=/var/tmp/heimdall
 LOG=/var/tmp/heimdall-run.log
 PID=/var/tmp/heimdall.pid
+SUP=/var/tmp/heimdall-sup.pid
+SUPERVISOR="$REMOTE/scripts/heimdall.sh"
 FETCH_DIR="${HEIMDALL_FETCH_DIR:-/tmp/heimdall-samples}"
-
 r() { ssh -o ControlPath="$SOCK" -o BatchMode=yes -o ConnectTimeout=5 "$ROUTER" "$@"; }
-
 need_socket() {
 	if ! ssh -o ControlPath="$SOCK" -O check "$ROUTER" 2>/dev/null; then
 		echo "no open router session; run: $0 connect" >&2
 		exit 1
 	fi
 }
-
 usage() {
 	cat <<EOF
 usage: $(basename "$0") <command>
-
   connect             open the shared SSH session (asks for the router login)
   disconnect          close it
   deploy              copy binary ($ARCH), config, catalog and scripts
-  start | stop        start or stop the probe
+  start | stop        start or stop the probe (through its supervisor when deployed)
   restart             stop, clear samples, start
   status              version, process state and the last log lines
   run <seconds>       restart, wait, stop
   fetch               copy samples and log to $FETCH_DIR
+  boot install|remove start the supervisor at every boot, or no longer
   sh '<command>'      run a read-only command on the router
 EOF
 }
@@ -79,16 +83,24 @@ deploy)
 		echo "client-ID salt for $device installed"
 	fi
 	tar -C "$ROOT/catalog" -cf - . | r "tar -C $REMOTE/catalog -xf -"
-	tar -C "$ROOT/scripts/router" -cf - . | r "tar -C $REMOTE/scripts -xf -"
+	tar -C "$ROOT/scripts/$SCRIPTS" -cf - . | r "tar -C $REMOTE/scripts -xf -"
 	r "mv $REMOTE/heimdall-probe.new $REMOTE/heimdall-probe && $REMOTE/heimdall-probe version"
 	;;
 start)
 	need_socket
-	r "cd $REMOTE && if [ -f $PID ] && kill -0 \$(cat $PID) 2>/dev/null; then echo already running; else ./heimdall-probe run -config config.yaml > $LOG 2>&1 < /dev/null & echo \$! > $PID; sleep 2; tail -3 $LOG; fi"
+	# With a supervisor deployed, it runs the probe and restarts it.
+	r "if [ -f $SUPERVISOR ]; then
+		if [ -f $SUP ] && kill -0 \$(cat $SUP) 2>/dev/null; then echo already running; else
+			sh $SUPERVISOR > /dev/null 2>&1 < /dev/null & sleep 3; tail -3 $LOG; fi
+	elif [ -f $PID ] && kill -0 \$(cat $PID) 2>/dev/null; then echo already running; else
+		cd $REMOTE && ./heimdall-probe run -config config.yaml > $LOG 2>&1 < /dev/null & echo \$! > $PID; sleep 2; tail -3 $LOG; fi"
 	;;
 stop)
 	need_socket
-	r "if [ -f $PID ] && kill \$(cat $PID) 2>/dev/null; then sleep 1; tail -1 $LOG; else echo not running; fi; rm -f $PID"
+	r "if [ -f $SUP ] && kill \$(cat $SUP) 2>/dev/null; then
+		i=0; while kill -0 \$(cat $SUP 2>/dev/null) 2>/dev/null && [ \$i -lt 15 ]; do sleep 1; i=\$((i + 1)); done; tail -1 $LOG
+	elif [ -f $PID ] && kill \$(cat $PID) 2>/dev/null; then sleep 1; tail -1 $LOG; else echo not running; fi
+	rm -f $PID $SUP"
 	;;
 restart)
 	"$0" stop
@@ -97,7 +109,7 @@ restart)
 	;;
 status)
 	need_socket
-	r "cd $REMOTE && ./heimdall-probe version; if [ -f $PID ] && kill -0 \$(cat $PID) 2>/dev/null; then echo running pid \$(cat $PID); else echo stopped; fi; tail -5 $LOG 2>/dev/null; ls -l $SAMPLES 2>/dev/null"
+	r "cd $REMOTE && ./heimdall-probe version; if [ -f $PID ] && kill -0 \$(cat $PID) 2>/dev/null; then echo running pid \$(cat $PID); else echo stopped; fi; if [ -f $SUP ] && kill -0 \$(cat $SUP) 2>/dev/null; then echo supervised; fi; grep -q '# heimdall\$' /etc/rc.local 2>/dev/null && echo starts at boot; tail -5 $LOG 2>/dev/null; ls -l $SAMPLES 2>/dev/null"
 	;;
 run)
 	secs="${1:?seconds}"
@@ -112,6 +124,16 @@ fetch)
 	# given relative to one directory.
 	r "cd /var/tmp && tar -cf - $(basename "$SAMPLES") $(basename "$LOG")" | tar -C "$FETCH_DIR" -xf -
 	ls -lR "$FETCH_DIR"
+	;;
+boot)
+	need_socket
+	what="${1:?install or remove}"
+	r "test -f $REMOTE/scripts/install-boot.sh" || { echo "no install-boot.sh in $REMOTE/scripts; deploy with HEIMDALL_SCRIPTS=extender" >&2; exit 1; }
+	case "$what" in
+	install) r "sh $REMOTE/scripts/install-boot.sh" ;;
+	remove) r "sh $REMOTE/scripts/install-boot.sh remove" ;;
+	*) usage; exit 2 ;;
+	esac
 	;;
 sh)
 	need_socket

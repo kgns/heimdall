@@ -269,3 +269,30 @@ def test_only_confirmed_incidents_are_posted(aws):
         }
     )
     assert len(posts) == 4 and "access" in posts[-1][1]
+
+
+def test_extender_incident_named_from_the_cpe(aws):
+    from heimdall_cloud.ingest import NameStore
+    from heimdall_cloud.schema import parse_batch
+
+    table, ssm = aws
+    ssm.put_parameter(Name=WEBHOOK, Type="SecureString", Value="https://hooks.slack.com/services/T/B/x")
+    store = NameStore(table, now=lambda: 1_793_020_000)
+    lan = {"ts_ms": 1_793_020_000_000, "kind": "lan", "status": "ok", "target_id": "lan/aaa",
+           "extra": {"client_name": "kagan-pc"}}  # fmt: skip
+    flow = {"ts_ms": 1_793_020_000_000, "kind": "flow", "status": "ok", "target_id": "flow/bbb",
+            "extra": {"client": "bbb", "client_name": "iPhone"}}  # fmt: skip
+    samples = parse_batch({"device": "ex7501-home", "samples": [lan, flow]}, 1_793_020_000_000).samples
+    assert store.observe("ex7501-home", samples) == 2
+    # Names already written are not written again.
+    assert store.observe("ex7501-home", samples) == 0
+
+    posts = []
+    n = notifier(table, ssm, posts)
+    n.sites = {"wx5600-ap-17479": "ex7501-home"}
+    start = ev(
+        "incident_start", scope="client", cause="weak_signal", services=["aaa"], confirmed=True,
+        clients={"aaa": {"node": "WX5600-AP-17479", "rssi": -80}},
+    )  # fmt: skip
+    n({"device": "wx5600-ap-17479", "events": [start]})
+    assert len(posts) == 1 and "- client kagan-pc (aaa): WX5600-AP-17479" in posts[0][1]

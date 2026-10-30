@@ -180,9 +180,19 @@ It uploads as its own device and names its CPE in `site`. Its detector
 raises the incidents of its clients from its own readings and backhaul
 incidents; the CPE lists the extender in `detect.delegated_nodes` and
 raises no client incident for those clients. The notifier posts the
-extender's incidents under the CPE's name. The probe needs the CPE's
-client-ID salt, so that both probes name a client alike, and runs from
-`/tmp`, which is RAM, so it is gone after the extender reboots:
+extender's incidents under the CPE's name, with the client names the
+ingest recorded from the CPE's samples. The probe needs the CPE's
+client-ID salt, so that both probes name a client alike.
+
+It lives in `/misc/heimdall`, a flash partition (UBI) where the firmware
+keeps its own logs, and `scripts/extender/heimdall.sh` supervises it:
+it waits for the gateway to answer, starts the probe and restarts it when
+it exits. `rt boot install` adds one line to `/etc/rc.local`, which
+OpenWrt runs at the end of every boot, so the probe comes back after a
+reboot. `/etc` is on the overlay, which keeps the line across reboots but
+not across a firmware upgrade or a factory reset; the original file is
+kept as `/misc/heimdall/rc.local.orig`, and `rt boot remove` takes the
+line out again. The log and the local samples stay in `/var/tmp` (RAM).
 
 ```sh
 scripts/rt sh 'lxc-attach -n heimdall -- cat /opt/heimdall/etc/lan.salt' > configs/local/wx5600-ap-17479.salt
@@ -190,12 +200,16 @@ scripts/new-device-token wx5600-ap-17479     # once; add the device to var.devic
 cp configs/extender.example.yaml configs/local/extender.yaml
 (cd probe && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o ../bin/linux-extender-arm64/heimdall-probe ./cmd/heimdall-probe)
 export HEIMDALL_ROUTER=root@192.168.1.2 HEIMDALL_SSH_SOCK=~/.ssh/heimdall-extender.sock \
-  HEIMDALL_REMOTE=/tmp/heimdall HEIMDALL_ARCH=extender-arm64 HEIMDALL_CONFIG=configs/local/extender.yaml
-scripts/rt connect && scripts/rt deploy && scripts/rt start
+  HEIMDALL_ARCH=extender-arm64 HEIMDALL_SCRIPTS=extender HEIMDALL_CONFIG=configs/local/extender.yaml
+scripts/rt connect && scripts/rt deploy && scripts/rt boot install && scripts/rt start
 ```
 
 The binary goes to `bin/linux-extender-arm64` so that `bin/linux-arm64`,
 which the reflector instance is built from, is left alone.
+
+The extender's own NTP client does not run on this firmware, so its clock
+drifts (about 25 s ahead after 25 days). The probe reports the offset in
+its `clock` samples but does not correct the clock.
 
 ### heimdall-client
 
@@ -258,7 +272,7 @@ the UI are lost on every deploy, so change dashboards in the generator.
 | service | what happens on one service's paths? Per-destination RTT and loss, HTTPS phases, edges, failures, destination changes |
 | network | access network, DNS, LAN and probe health |
 | LAN clients | is it the home network or the internet? Per client LAN and WAN parts, signal, retries, radio airtime, Wi-Fi events, and the heimdall-client cross-check |
-| topology | where is the time spent? A graph from every client through its mesh node and the CPE to the ISP and the internet, with each client's LAN round trip and WAN part (coloured by LAN p90 once it opened 5 connections, else by ping), the extender's own hop to its clients and its backhaul, a table of all clients, and the home network's incidents from both probes with duration and cause |
+| topology | where is the time spent? A graph of the CPE, the ISP and the internet in one row, the CPE's clients and the extender below, and the extender's clients below it, with each client's LAN round trip and WAN part (coloured by LAN p90 once it opened 5 connections, else by ping), the extender's own hop to its clients and its backhaul. Below it the latency of each part of the path over time, a table of all clients, and the home network's incidents from both probes with duration and cause |
 
 The record's address is set by `heimdall-dnssync` (`terraform/dnssync.tf`)
 because the task's public IP changes on each deploy. The name is a direct
@@ -386,9 +400,26 @@ the next AS, and the latency added at that border). For LAN clients it
 writes `daily_client` (LAN and WAN parts, pings, signal, retries, roams),
 `daily_client_service` (a client's WAN part next to the CPE's own TCP probe
 of the same service) and `daily_crosscheck` (heimdall-client connections
-matched with the CPE's split). It also writes a `summary` JSON per day
-under `derived/` in the raw bucket, with flagged clients. The Grafana
-dashboard "heimdall / daily analysis" shows them. To run past days:
+matched with the CPE's split). An extender probe's figures join its CPE's
+rows of the same clients (`hop_p50`, `hop_p90`, the extender's own signal
+`ext_rssi_avg`), so `lan - hop` shows what the backhaul adds.
+
+`daily_attribution` answers where the latency is. For every UTC hour it
+holds the median of each part of the path: `wifi` (the LAN part of the
+CPE's own clients' connections), `ext_hop` (the extender's hop to its
+clients), `backhaul` (the extender's ping to the CPE), `access` (the first
+hop into the ISP) and `beyond_isp` (the servers' answer minus the access).
+An hour is degraded for a part when its median is 30% and a few
+milliseconds above the part's day median. The summary blames the part that
+added the most in each degraded hour, and splits `beyond_isp` into
+`isp_path` and `service` with the AWS control, the way `daily_compare`
+does. It also gives the day's latency budget: each part's median.
+
+It also writes a `summary` JSON per day under `derived/` in the raw bucket,
+with flagged clients, the attribution, the extenders' backhaul and the
+incidents of both probes. The Grafana dashboard "heimdall / daily
+analysis" shows them, with the degraded hours by part of the path and the
+latency budget day by day. To run past days:
 
 ```sh
 terraform apply -var 'analytics_backfill=["2026-10-26"]'

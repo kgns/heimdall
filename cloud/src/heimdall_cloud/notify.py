@@ -77,6 +77,12 @@ GENERIC_HOSTNAME = re.compile(
 )
 
 
+def names_key(device: str) -> str:
+    """The incidents table's partition that holds the client names of a
+    CPE, as the ingest records them."""
+    return f"names#{device}"
+
+
 def client_label(client: str, cx: dict[str, Any]) -> str:
     """The client's DHCP hostname with its ID, or the ID alone when the
     probe reports no hostname or a generic one."""
@@ -261,6 +267,23 @@ class Notifier:
         """What makes two incidents the same for notifications."""
         return "|".join([x.get("scope", ""), x.get("cause", ""), ",".join(sorted(x.get("services") or []))])
 
+    def add_names(self, device: str, x: dict[str, Any]) -> None:
+        """Fill in the DHCP hostname of the clients in an incident whose
+        context has none, as the ingest recorded it from the CPE of the
+        device's home (the device itself, or the CPE an extender belongs
+        to)."""
+        site = self.sites.get(device, device)
+        for client, cx in (x.get("clients") or {}).items():
+            if not isinstance(cx, dict) or cx.get("client_name"):
+                continue
+            try:
+                name = self.item(names_key(site), client).get("name")
+            except Exception as e:  # a missing name never stops a notification
+                log.warning("name lookup failed for %s: %s", client, e)
+                continue
+            if name:
+                cx["client_name"] = name
+
     def item(self, device: str, incident_id: str) -> dict[str, Any]:
         resp = self.table.get_item(Key={"device": device, "incident_id": incident_id})
         return resp.get("Item") or {}
@@ -385,6 +408,8 @@ class Notifier:
             )
             if not post:
                 continue
+            if x.get("scope") in HOME_SCOPES:
+                self.add_names(device, x)
             text = format_message(
                 device_label(device, self.sites), ev, control, self.grafana, note, extender=device in self.sites
             )

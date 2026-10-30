@@ -1067,6 +1067,14 @@ AS_NAMES = """
 """
 
 
+def budget_series(title: str, text: str, unit: str, description: str = "") -> dict[str, Any]:
+    """A series of one point per day, drawn with its points."""
+    s = series(title, text, unit, description)
+    s["fieldConfig"]["defaults"]["custom"]["showPoints"] = "always"
+    s["fieldConfig"]["defaults"]["custom"]["pointSize"] = 6
+    return s
+
+
 def daily() -> dict[str, Any]:
     """Results of the daily analysis (heimdall_cloud.analytics), one row per
     day and item; the time range selects the days."""
@@ -1179,6 +1187,49 @@ def daily() -> dict[str, Any]:
         ),
         L.place(
             table(
+                "Degraded hours: which part of the path",
+                """
+                WITH a AS (SELECT * FROM heimdall.daily_attribution WHERE {D}),
+                top AS (
+                  SELECT dt, hour, max_by(segment, added_ms) AS segment, max(added_ms) AS added_ms,
+                    array_join(array_agg(segment || ' +' || CAST(round(added_ms, 1) AS varchar)), ', ') AS segments,
+                    arbitrary(local_hour) AS local_hour
+                  FROM a WHERE degraded GROUP BY dt, hour
+                )
+                SELECT dt AS day, local_hour, CASE segment WHEN 'wifi' THEN 'home Wi-Fi'
+                    WHEN 'ext_hop' THEN 'extender Wi-Fi' WHEN 'backhaul' THEN 'extender backhaul'
+                    WHEN 'access' THEN 'ISP access' WHEN 'beyond_isp' THEN 'beyond the ISP' ELSE segment END AS blame,
+                  added_ms, segments
+                FROM top ORDER BY dt DESC, added_ms DESC
+                """,
+                "From the daily analysis: hours (local time) where a part of the path was 30% and a few ms above "
+                "its own day median, with the part that added the most named. segments lists every degraded part. "
+                "Beyond the ISP, the daily summary uses the AWS control to tell the ISP's path from the services.",
+                units={"added_ms": "ms"},
+            ),
+            24,
+            8,
+        ),
+        L.place(
+            budget_series(
+                "Where the time goes, by day",
+                """
+                SELECT CAST(date_parse(dt, '%Y-%m-%d') AS timestamp) AS time,
+                  CASE segment WHEN 'wifi' THEN 'home Wi-Fi' WHEN 'ext_hop' THEN 'extender Wi-Fi'
+                    WHEN 'backhaul' THEN 'extender backhaul' WHEN 'access' THEN 'ISP access'
+                    WHEN 'beyond_isp' THEN 'beyond the ISP' ELSE segment END AS metric,
+                  arbitrary(baseline) AS value
+                FROM heimdall.daily_attribution WHERE {D} GROUP BY 1, 2 ORDER BY 1
+                """,
+                "ms",
+                "Each part's median over the day: where a typical connection's round trip is spent. The home "
+                "Wi-Fi and the extender's Wi-Fi are different clients, so the parts do not add up.",
+            ),
+            24,
+            8,
+        ),
+        L.place(
+            table(
                 "Outage events from IODA",
                 """
                 SELECT entity, datasource, method, score,
@@ -1195,7 +1246,7 @@ def daily() -> dict[str, Any]:
             6,
         ),
     ]
-    d = dashboard("heimdall-daily", "heimdall / daily analysis", p, [DEVICE])
+    d = dashboard("heimdall-daily", "heimdall / daily analysis", p, [LAN_DEVICE])
     d["time"] = {"from": "now-7d", "to": "now"}
     return d
 
@@ -1677,39 +1728,48 @@ BACKHAUL = (
 )
 
 
-# Where each node of the topology is drawn, as tiers from the top: the
-# categories the CPE measures, the internet, the ISP, the CPE, then the
-# CPE's own clients with the mesh extenders, and each extender's clients
-# below it. The node graph's layered layout only runs left to right, so
-# the positions are fixed here (fixedx, fixedy); every node needs one. The
-# panel opens centred on (0, 0), so the tiers are centred on it too.
-TOPO_X, TOPO_Y = 150, 160
-
-
-def tier(n: int) -> str:
-    """The y of tier n of the six, centred on 0."""
-    return f"{(n - 2.5) * TOPO_Y:.1f}"
-
-
+# Where each node of the topology is drawn. The CPE, the ISP and the
+# internet form one row, left to right, with the categories the CPE
+# measures in a row above the internet. The CPE's own clients sit in a row
+# under the CPE, and each mesh extender in the same row, under the ISP or,
+# when the CPE's clients reach that far, just right of the last of them.
+# An extender's clients sit in a row under it. The node graph's layered
+# layout only runs left to right, so the positions are fixed here (fixedx,
+# fixedy); every node needs one. The panel opens centred on (0, 0), so the
+# whole drawing is moved to centre on it.
+TOPO_X, TOPO_Y = 150, 170
+# The gap between the CPE, the ISP and the internet.
+TOPO_GAP = 2 * TOPO_X
 TOPO_POSITIONS = f"""
-t4 AS (
-  SELECT id, (row_number() OVER (ORDER BY grp, k) - (count(*) OVER () + 1) / 2.0) * {TOPO_X} AS x FROM (
-    SELECT 'client:' || client AS id, 0 AS grp, coalesce(name, client) AS k FROM c WHERE node = 'cpe'
-    UNION ALL SELECT 'node:' || node, 1, node FROM x
-  ) t
+cc AS (
+  SELECT 'client:' || client AS id,
+    (row_number() OVER (ORDER BY coalesce(name, client)) - (count(*) OVER () + 1) / 2.0) * {TOPO_X} AS x
+  FROM c WHERE node = 'cpe'
+),
+xn AS (
+  SELECT 'node:' || node AS id, node,
+    greatest({TOPO_GAP}.0, coalesce((SELECT max(x) FROM cc), 0.0) + {TOPO_X}) + (row_number() OVER (ORDER BY node) - 1)
+      * {TOPO_GAP} AS x
+  FROM x
+),
+raw AS (
+  SELECT 'cpe' AS id, 0.0 AS x, 0.0 AS y
+  UNION ALL SELECT 'isp', {TOPO_GAP}.0, 0.0
+  UNION ALL SELECT 'internet', {2 * TOPO_GAP}.0, 0.0
+  UNION ALL SELECT 'cat:' || category,
+    {2 * TOPO_GAP} + (row_number() OVER (ORDER BY category) - (count(*) OVER () + 1) / 2.0) * {TOPO_X}, -{TOPO_Y}.0
+  FROM cat
+  UNION ALL SELECT id, x, {TOPO_Y}.0 FROM cc
+  UNION ALL SELECT id, x, {TOPO_Y}.0 FROM xn
+  UNION ALL SELECT 'client:' || c.client,
+    xn.x + (row_number() OVER (PARTITION BY c.node ORDER BY coalesce(c.name, c.client))
+      - (count(*) OVER (PARTITION BY c.node) + 1) / 2.0) * {TOPO_X},
+    {2 * TOPO_Y}.0
+  FROM c JOIN xn ON xn.node = c.node
 ),
 pos AS (
-  SELECT 'cat:' || category AS id,
-    (row_number() OVER (ORDER BY category) - (count(*) OVER () + 1) / 2.0) * {TOPO_X} AS x, {tier(0)} AS y FROM cat
-  UNION ALL SELECT 'internet', 0.0, {tier(1)}
-  UNION ALL SELECT 'isp', 0.0, {tier(2)}
-  UNION ALL SELECT 'cpe', 0.0, {tier(3)}
-  UNION ALL SELECT id, x, {tier(4)} FROM t4
-  UNION ALL SELECT 'client:' || c.client,
-    t4.x + (row_number() OVER (PARTITION BY c.node ORDER BY coalesce(c.name, c.client))
-      - (count(*) OVER (PARTITION BY c.node) + 1) / 2.0) * {TOPO_X},
-    {tier(5)}
-  FROM c JOIN t4 ON t4.id = 'node:' || c.node
+  SELECT id, x - (max(x) OVER () + min(x) OVER ()) / 2 AS x, y - (max(y) OVER () + min(y) OVER ()) / 2 AS y
+  FROM raw
 )
 """
 
@@ -1799,9 +1859,46 @@ def topology() -> dict[str, Any]:
         "options": {"layoutAlgorithm": "layered", "nodes": {}, "edges": {}, "zoomMode": "cooperative"},
         "targets": [target(nodes, TABLE, "nodes"), target(edges, TABLE, "edges")],
     }
+    path = series(
+        "Latency by part of the path",
+        """
+        SELECT {B} AS time, 'home Wi-Fi (CPE clients)' AS metric,
+          approx_percentile(CAST(json_extract_scalar(extra, '$.lan_ms') AS double), 0.5) AS value
+        FROM heimdall.samples
+        WHERE {R} AND kind = 'flow' AND status = 'ok' AND json_extract_scalar(extra, '$.proto') = 'tcp'
+          AND coalesce(json_extract_scalar(extra, '$.node'), 'cpe') = 'cpe'
+        GROUP BY 1, 2
+        UNION ALL
+        SELECT {B}, 'extender Wi-Fi (its clients)',
+          approx_percentile(CAST(json_extract_scalar(extra, '$.lan_ms') AS double), 0.5)
+        FROM heimdall.samples
+        WHERE {RE} AND kind = 'flow' AND status = 'ok' AND json_extract_scalar(extra, '$.proto') = 'tcp'
+        GROUP BY 1, 2
+        UNION ALL
+        SELECT {B}, 'extender backhaul', approx_percentile(rtt_ms, 0.5)
+        FROM heimdall.samples WHERE {RE} AND kind = 'icmp' AND target_id = 'uplink' AND status = 'ok'
+        GROUP BY 1, 2
+        UNION ALL
+        SELECT {B}, 'ISP access', approx_percentile(rtt_ms, 0.5)
+        FROM heimdall.samples WHERE {R} AND kind = 'icmp' AND target_id = 'isp-hop1' AND status = 'ok'
+        GROUP BY 1, 2
+        UNION ALL
+        SELECT {B}, 'servers (WAN part)', approx_percentile(CAST(json_extract_scalar(extra, '$.wan_ms') AS double), 0.5)
+        FROM heimdall.samples WHERE {R} AND kind = 'flow' AND status = 'ok'
+        GROUP BY 1, 2
+        ORDER BY 1
+        """,
+        "ms",
+        "Medians over time of each part of a connection's round trip, in path order: the LAN part of the "
+        "connections of the CPE's own clients, the extender's hop to its clients, the extender's ping to the "
+        "CPE, the first hop into the ISP, and the servers' answer to the clients' connections (which includes "
+        "the ISP access). The part that rises when things get slow is where the problem is.",
+    )
+    path["fieldConfig"]["defaults"]["custom"]["scaleDistribution"] = {"type": "log", "log": 10}
     L = Layout()
     p = [
-        L.place(graph, 24, 32),
+        L.place(graph, 24, 22),
+        L.place(path, 24, 9),
         L.place(
             table(
                 "Clients",

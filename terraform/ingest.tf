@@ -41,6 +41,13 @@ data "aws_iam_policy_document" "ingest" {
     actions   = ["lambda:InvokeFunction"]
     resources = [aws_lambda_function.notifier.arn]
   }
+  # The client names the CPEs report, for the notifier (one item per
+  # client in the incidents table).
+  statement {
+    sid       = "ClientNames"
+    actions   = ["dynamodb:PutItem"]
+    resources = [aws_dynamodb_table.incidents.arn]
+  }
   statement {
     sid       = "DeviceTokens"
     actions   = ["ssm:GetParameter"]
@@ -80,6 +87,7 @@ resource "aws_lambda_function" "ingest" {
       FIREHOSE_STREAM   = aws_kinesis_firehose_delivery_stream.samples.name
       TOKEN_PREFIX      = "/heimdall/devices"
       NOTIFIER_FUNCTION = aws_lambda_function.notifier.function_name
+      NAMES_TABLE       = aws_dynamodb_table.incidents.name
     }
   }
 

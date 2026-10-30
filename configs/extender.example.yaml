@@ -4,12 +4,15 @@
 # part of every TCP handshake it bridges), its radios and stations, and the
 # backhaul to the CPE. Deployed with
 #
-#   HEIMDALL_ROUTER=root@<extender> HEIMDALL_SSH_SOCK=~/.ssh/heimdall-extender.sock \
-#   HEIMDALL_REMOTE=/tmp/heimdall HEIMDALL_CONFIG=configs/local/extender.yaml scripts/rt deploy
+#   export HEIMDALL_ROUTER=root@<extender> HEIMDALL_SSH_SOCK=~/.ssh/heimdall-extender.sock \
+#     HEIMDALL_ARCH=extender-arm64 HEIMDALL_SCRIPTS=extender HEIMDALL_CONFIG=configs/local/extender.yaml
+#   scripts/rt deploy && scripts/rt boot install && scripts/rt start
 #
-# /tmp is RAM on the extender, so the probe is gone after a reboot. The
-# client-ID salt must be the CPE's (configs/local/<device>.salt), or the
-# two probes name the same client differently.
+# The probe lives in /misc/heimdall, a flash partition the firmware keeps
+# its own logs on, and a supervisor started from /etc/rc.local runs it at
+# every boot. The client-ID salt must be the CPE's
+# (configs/local/<device>.salt), or the two probes name the same client
+# differently.
 device: wx5600-ap-17479
 # The CPE this extender belongs to; the dashboards show them together.
 site: ex7501-home
@@ -40,7 +43,7 @@ targets:
 
 # The catalog names the connections; none of its services is measured.
 catalog:
-  path: /tmp/heimdall/catalog/targets.yaml
+  path: /misc/heimdall/catalog/targets.yaml
   regions: [tr]
   only: [none]
 
@@ -54,7 +57,7 @@ output:
 upload:
   enabled: true
   url: https://ingest.lat.kgns.dev/v1/batch
-  token_file: /tmp/heimdall/upload.token
+  token_file: /misc/heimdall/upload.token
   buffer: 8MiB
   max_batch_bytes: 2MiB
 
@@ -65,7 +68,7 @@ collectors:
     interval: 5s
   lan:
     enabled: false
-    salt_file: /tmp/heimdall/lan.salt
+    salt_file: /misc/heimdall/lan.salt
   flows:
     enabled: true
     interface: br0

@@ -23,7 +23,7 @@ import zlib
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from heimdall_cloud.notify import incident_events
+from heimdall_cloud.notify import incident_events, names_key
 from heimdall_cloud.schema import Batch, ValidationError, parse_batch, to_record
 
 log = logging.getLogger()
@@ -147,6 +147,49 @@ class ASNLookup:
         return value
 
 
+NAME_TTL_DAYS = 30
+
+
+class NameStore:
+    """Records the DHCP hostname a CPE reports for each LAN client (extra
+    client_name), so that notifications from other probes of the same home,
+    such as an extender's, can name the client too. The names are kept in
+    the incidents table, one item per client under names_key(device), and
+    written only when a name is new or changed since this Lambda instance
+    last saw it."""
+
+    def __init__(self, table: Any, now: Callable[[], float] = time.time):
+        self.table, self.now = table, now
+        self._seen: dict[tuple[str, str], str] = {}
+
+    def observe(self, device: str, samples: Iterable[dict[str, Any]]) -> int:
+        found: dict[str, str] = {}
+        for s in samples:
+            raw = s.get("extra")
+            if s.get("kind") not in ("lan", "flow") or not raw or "client_name" not in raw:
+                continue
+            x = json.loads(raw) if isinstance(raw, str) else raw
+            name = x.get("client_name")
+            client = x.get("client") or (s.get("target_id") or "").removeprefix("lan/")
+            if isinstance(name, str) and name and client:
+                found[client] = name[:64]
+        written = 0
+        for client, name in found.items():
+            if self._seen.get((device, client)) == name:
+                continue
+            self.table.put_item(
+                Item={
+                    "device": names_key(device),
+                    "incident_id": client,
+                    "name": name,
+                    "ttl": int(self.now()) + NAME_TTL_DAYS * 86400,
+                }
+            )
+            self._seen[(device, client)] = name
+            written += 1
+        return written
+
+
 def chunk_records(records: Iterable[bytes]) -> Iterable[list[bytes]]:
     """Group records into PutRecordBatch calls within the API limits."""
     batch: list[bytes] = []
@@ -188,6 +231,7 @@ class Handler:
         asn: ASNLookup | None = None,
         now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
         notify: Callable[[str, list[dict[str, Any]]], None] | None = None,
+        names: NameStore | None = None,
     ):
         self.tokens = TokenStore(ssm, token_prefix)
         self.firehose = firehose
@@ -195,6 +239,7 @@ class Handler:
         self.asn = asn or ASNLookup()
         self.now_ms = now_ms
         self.notify = notify
+        self.names = names
 
     def __call__(self, event: dict[str, Any], context: Any = None) -> dict[str, Any]:
         try:
@@ -241,6 +286,11 @@ class Handler:
             # The probe resends the whole batch; duplicates are removed
             # downstream by (device, run_id, seq).
             raise HTTPError(503, f"{failed} records not delivered")
+        if self.names:
+            try:
+                self.names.observe(batch.device, batch.samples)
+            except Exception as e:  # names never fail the ingest
+                log.error("recording client names failed: %s", e)
         if self.notify:
             events = incident_events(batch.samples)
             if events:
@@ -267,12 +317,16 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 payload = json.dumps({"device": device, "events": events}).encode()
                 lam.invoke(FunctionName=fn, InvocationType="Event", Payload=payload)
 
+        names = None
+        if table := os.environ.get("NAMES_TABLE"):
+            names = NameStore(boto3.resource("dynamodb").Table(table))
         _handler = Handler(
             ssm=boto3.client("ssm"),
             firehose=boto3.client("firehose"),
             stream=os.environ["FIREHOSE_STREAM"],
             token_prefix=os.environ["TOKEN_PREFIX"],
             notify=notify,
+            names=names,
         )
     return _handler(event, context)
 

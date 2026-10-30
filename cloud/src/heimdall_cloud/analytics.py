@@ -28,6 +28,17 @@ bucket, read through the Glue tables of the same names:
 ``daily_crosscheck``
     Connections of a client device running heimdall-client, matched with
     the CPE's record of the same connections.
+``daily_attribution``
+    Per CPE, UTC hour and segment of the path (the Wi-Fi of the CPE's
+    clients, the hop between an extender and its clients, the extender's
+    backhaul, the ISP access, the part beyond the ISP): the hour's median
+    next to the segment's day median, and whether the hour was degraded.
+    The summary names, for every degraded hour, the segment to blame.
+
+Probes on mesh extenders, which name their CPE as the site in their
+heartbeats, are folded into their CPE: their clients' hop and signal join
+the CPE's rows of the same clients in ``daily_client``, their backhaul and
+incidents appear under the CPE in the summary.
 ``summary``
     One JSON document with the day's headline findings, for the report.
 
@@ -214,6 +225,10 @@ SLOW_LAN_P90_MS = 30.0
 HIGH_RETRY_PCT = 20.0
 MANY_ROAMS = 10
 CLIENT_WAN_RATIO = 1.3
+# What the backhaul and the extender may add to the LAN part of an
+# extender client's connections (CPE's figure minus the extender's hop);
+# a wired backhaul adds well under a millisecond.
+SLOW_BACKHAUL_ADDED_MS = 5.0
 
 
 def daily_client(athena: Athena, day: date) -> list[dict[str, Any]]:
@@ -310,6 +325,206 @@ def daily_client(athena: Athena, day: date) -> list[dict[str, Any]]:
     return out
 
 
+def extender_sites(athena: Athena, day: date) -> dict[str, str]:
+    """Probes on mesh extenders and the CPE each belongs to, from the site
+    their heartbeats name."""
+    rows = athena.query(f"""
+        SELECT device, max(json_extract_scalar(extra, '$.site')) AS site
+        FROM heimdall.samples
+        WHERE {day_filter(day)} AND kind = 'heartbeat' AND json_extract_scalar(extra, '$.site') <> ''
+        GROUP BY 1
+    """)  # noqa: S608 - only dates are interpolated
+    return {
+        r["device"]: r["site"]
+        for r in rows
+        if r["device"] and r["site"] and DEVICE_RE.match(r["device"]) and DEVICE_RE.match(r["site"])
+    }
+
+
+def backhaul(athena: Athena, day: date, sites: dict[str, str]) -> list[dict[str, Any]]:
+    """Per extender probe: its ping to the CPE over the day."""
+    if not sites:
+        return []
+    ext_in = ", ".join(f"'{d}'" for d in sorted(sites))
+    rows = athena.query(f"""
+        SELECT device, count(*) AS samples,
+          approx_percentile(rtt_ms, 0.5) FILTER (WHERE status = 'ok') AS p50,
+          approx_percentile(rtt_ms, 0.95) FILTER (WHERE status = 'ok') AS p95,
+          approx_percentile(rtt_ms, 0.99) FILTER (WHERE status = 'ok') AS p99,
+          100.0 * count_if(status <> 'ok') / count(*) AS loss_pct
+        FROM heimdall.samples
+        WHERE {day_filter(day)} AND device IN ({ext_in}) AND kind = 'icmp' AND target_id = 'uplink'
+        GROUP BY 1
+    """)  # noqa: S608 - only dates and validated device IDs are interpolated
+    return [
+        {"device": r["device"], "site": sites.get(r["device"] or ""), "samples": _int(r["samples"]),
+         **{k: _num(r[k]) for k in ("p50", "p95", "p99", "loss_pct")}}
+        for r in rows
+    ]  # fmt: skip
+
+
+# What an extender's probe adds to the CPE's row of the same client. Its
+# lan_ms is the hop between the extender and the client alone, and its
+# Wi-Fi readings are the extender's own.
+EXTENDER_FIELDS = {
+    "lan_p50": "hop_p50",
+    "lan_p90": "hop_p90",
+    "flows": "hop_flows",
+    "rssi_avg": "ext_rssi_avg",
+    "rssi_min": "ext_rssi_min",
+    "tx_rate_p50": "ext_tx_rate_p50",
+    "ps_share": "ext_ps_share",
+}
+
+
+def merge_extenders(clients: list[dict[str, Any]], sites: dict[str, str]) -> list[dict[str, Any]]:
+    """Fold the rows of extender probes into the rows of their CPE: every
+    client keeps one row, under the CPE, with the extender's figures as
+    the EXTENDER_FIELDS columns. A client only the extender saw gets a row
+    of its own under the CPE."""
+    out = [dict(c) for c in clients if c["device"] not in sites]
+    by_key = {(c["device"], c["client"]): c for c in out}
+    for e in clients:
+        site = sites.get(e["device"])
+        if not site:
+            continue
+        row = by_key.get((site, e["client"]))
+        if row is None:
+            row = {k: None for k in e}
+            row.update(
+                device=site, client=e["client"], node=e["node"], medium=e["medium"], band=e["band"], flows=0,
+                unanswered=0, roams=0, leaves=0,
+            )  # fmt: skip
+            out.append(row)
+            by_key[(site, e["client"])] = row
+        for src, dst in EXTENDER_FIELDS.items():
+            row[dst] = e.get(src)
+        if row.get("node") in (None, "cpe") and e.get("node"):
+            row["node"] = e["node"]
+    for row in out:
+        for dst in EXTENDER_FIELDS.values():
+            row.setdefault(dst, None)
+    return out
+
+
+# The segments of a connection's round trip the daily attribution follows,
+# in path order from the client. wifi: the LAN part of the connections of
+# the CPE's own clients; ext_hop: the hop between the extender and its
+# clients, measured on the extender; backhaul: the extender's ping to the
+# CPE; access: the first hop into the ISP; beyond_isp: the server's part of
+# the clients' connections minus the access.
+SEGMENTS = ("wifi", "ext_hop", "backhaul", "access", "beyond_isp")
+# A segment's hour is degraded when its median is DEGRADED_RATIO times its
+# day median and at least this many milliseconds above it.
+SEGMENT_MIN_ADDED_MS = {"wifi": 3.0, "ext_hop": 3.0, "backhaul": 2.0, "access": 3.0, "beyond_isp": 10.0}
+# Fewest samples in an hour for its median to count.
+SEGMENT_MIN_SAMPLES = 20
+
+
+def segment_hours(athena: Athena, day: date, sites: dict[str, str]) -> list[dict[str, Any]]:
+    """Hourly medians of every segment, per CPE; extender figures are
+    filed under the CPE they belong to."""
+    if sites:
+        cases = " ".join(f"WHEN '{d}' THEN '{s}'" for d, s in sorted(sites.items()))
+        site = f"CASE device {cases} ELSE device END"
+        ext_in = ", ".join(f"'{d}'" for d in sorted(sites))
+    else:
+        site, ext_in = "device", "''"
+    rows = athena.query(f"""
+        WITH s AS (
+          SELECT {site} AS site, hour(from_unixtime(ts_ms / 1000)) AS h,
+            CASE
+              WHEN kind = 'flow' AND device IN ({ext_in}) THEN 'ext_hop'
+              WHEN kind = 'flow' AND coalesce(json_extract_scalar(extra, '$.node'), 'cpe') = 'cpe' THEN 'wifi'
+              WHEN kind = 'icmp' AND device IN ({ext_in}) AND target_id = 'uplink' THEN 'backhaul'
+              WHEN kind = 'icmp' AND target_id = 'isp-hop1' THEN 'access'
+            END AS segment,
+            CASE WHEN kind = 'flow' THEN CAST(json_extract_scalar(extra, '$.lan_ms') AS double) ELSE rtt_ms END AS v
+          FROM heimdall.samples
+          WHERE {day_filter(day)} AND status = 'ok' AND (
+            (kind = 'flow' AND json_extract_scalar(extra, '$.proto') = 'tcp')
+            OR (kind = 'icmp' AND target_id IN ('uplink', 'isp-hop1')))
+          UNION ALL
+          SELECT device, hour(from_unixtime(ts_ms / 1000)), 'wan',
+            CAST(json_extract_scalar(extra, '$.wan_ms') AS double)
+          FROM heimdall.samples
+          WHERE {day_filter(day)} AND kind = 'flow' AND status = 'ok' AND device NOT IN ({ext_in})
+        )
+        SELECT site AS device, h AS hour, segment, approx_percentile(v, 0.5) AS p50, count(*) AS n
+        FROM s WHERE segment IS NOT NULL AND v IS NOT NULL GROUP BY 1, 2, 3
+    """)  # noqa: S608 - only dates and validated device IDs are interpolated
+    return [
+        {"device": r["device"], "hour": _int(r["hour"]), "segment": r["segment"], "p50": _num(r["p50"]),
+         "n": _int(r["n"]) or 0}
+        for r in rows
+    ]  # fmt: skip
+
+
+def attribute(
+    hours: list[dict[str, Any]], compare: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Per CPE and UTC hour, which segment of the path made the round trip
+    slower than usual, and per CPE the day's latency budget and verdict.
+
+    Each segment's hour is judged against the segment's own day median. In
+    a degraded hour the segment that added the most milliseconds is blamed;
+    beyond the ISP, the control probe tells the ISP's path from the
+    services themselves (daily_compare's attribution of that hour)."""
+    by_dev: dict[str, dict[str, dict[int, tuple[float, int]]]] = defaultdict(lambda: defaultdict(dict))
+    for r in hours:
+        if r["p50"] is not None and r["hour"] is not None:
+            by_dev[r["device"]][r["segment"]][r["hour"]] = (r["p50"], r["n"])
+    side: dict[tuple[str, int], Counter[str]] = defaultdict(Counter)
+    for c in compare:
+        if c.get("hour") is not None:
+            side[(c["device"], c["hour"])][c["attribution"]] += 1
+    rows: list[dict[str, Any]] = []
+    verdicts: dict[str, dict[str, Any]] = {}
+    for dev, segs in sorted(by_dev.items()):
+        # The part beyond the ISP: the servers' answer minus the access.
+        wan, access = segs.pop("wan", {}), segs.get("access", {})
+        segs["beyond_isp"] = {
+            h: (v - access[h][0], n) for h, (v, n) in wan.items() if h in access and v - access[h][0] > 0
+        }
+        budget: dict[str, float] = {}
+        per_hour: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for seg in SEGMENTS:
+            vals = {h: v for h, (v, n) in segs.get(seg, {}).items() if n >= SEGMENT_MIN_SAMPLES}
+            if not vals:
+                continue
+            base = statistics.median(vals.values())
+            budget[seg] = round(base, 1)
+            for h, v in sorted(vals.items()):
+                added = v - base
+                degraded = v >= DEGRADED_RATIO * base and added >= SEGMENT_MIN_ADDED_MS[seg]
+                rec = {
+                    "device": dev, "hour": h, "local_hour": (h + LOCAL_OFFSET_H) % 24, "segment": seg,
+                    "p50": round(v, 2), "baseline": round(base, 2), "added_ms": round(added, 2), "degraded": degraded,
+                }  # fmt: skip
+                rows.append(rec)
+                if degraded:
+                    per_hour[h].append(rec)
+        blamed: Counter[str] = Counter()
+        worst = []
+        for h, recs in sorted(per_hour.items()):
+            top = max(recs, key=lambda r: r["added_ms"])
+            blame = top["segment"]
+            if blame == "beyond_isp":
+                c = side.get((dev, h), Counter())
+                blame = "service" if c["service"] > c["access_or_path"] else "isp_path"
+            blamed[blame] += 1
+            worst.append(
+                {"local_hour": top["local_hour"], "blame": blame, "added_ms": top["added_ms"],
+                 "segments": {r["segment"]: r["added_ms"] for r in recs}}
+            )  # fmt: skip
+        verdicts[dev] = {
+            "latency_budget_ms": budget,
+            "degraded_hours_by_cause": dict(blamed),
+            "degraded_hours": sorted(worst, key=lambda w: -w["added_ms"])[:12],
+        }
+    return rows, verdicts
+
+
 def client_services(athena: Athena, day: date) -> list[dict[str, Any]]:
     """Per CPE, LAN client and service: the WAN part of the client's own
     connections next to the CPE's own TCP probe of the same service. A
@@ -403,16 +618,25 @@ def client_findings(clients: list[dict[str, Any]], services: list[dict[str, Any]
     out = []
     for c in sorted(clients, key=lambda c: -(c["flows"] or 0)):
         flags = []
-        # A mesh extender reports the signal it receives from the client,
-        # which reads far below what the client itself sees, so extender
-        # clients are judged by their link rate instead.
+        # Through the CPE's mesh topology an extender reports a signal far
+        # below what the client itself sees, so without the extender's own
+        # probe its clients are judged by their link rate. The extender's
+        # probe reads the signal from its radio directly.
         on_cpe = (c["node"] or "cpe") == "cpe"
+        ext_rssi = c.get("ext_rssi_avg")
         if on_cpe and c["rssi_avg"] is not None and c["rssi_avg"] <= WEAK_RSSI_DBM:
             flags.append("weak_signal")
-        if not on_cpe and c["tx_rate_p50"] is not None and c["tx_rate_p50"] < SLOW_LINK_MBPS:
+        if not on_cpe and ext_rssi is not None and ext_rssi <= WEAK_RSSI_DBM:
+            flags.append("weak_signal")
+        if not on_cpe and ext_rssi is None and c["tx_rate_p50"] is not None and c["tx_rate_p50"] < SLOW_LINK_MBPS:
             flags.append("weak_link")
         if c["lan_p90"] is not None and c["lan_p90"] >= SLOW_LAN_P90_MS:
             flags.append("slow_lan")
+        hop50, hop90 = c.get("hop_p50"), c.get("hop_p90")
+        if hop90 is not None and hop90 >= SLOW_LAN_P90_MS:
+            flags.append("slow_extender_hop")
+        if hop50 is not None and c["lan_p50"] is not None and c["lan_p50"] - hop50 >= SLOW_BACKHAUL_ADDED_MS:
+            flags.append("slow_backhaul")
         if c["retry_pct"] is not None and c["retry_pct"] >= HIGH_RETRY_PCT:
             flags.append("many_retries")
         if c["roams"] >= MANY_ROAMS:
@@ -605,9 +829,14 @@ def summarize(
     clients: list[dict[str, Any]] | None = None,
     client_svc: list[dict[str, Any]] | None = None,
     crosscheck: list[dict[str, Any]] | None = None,
+    sites: dict[str, str] | None = None,
+    verdicts: dict[str, dict[str, Any]] | None = None,
+    backhauls: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """The day's headline findings per CPE device."""
-    devices = sorted({s["device"] for s in services if s["device"] != control})
+    """The day's headline findings per CPE device. Extender probes (sites)
+    are reported under their CPE."""
+    sites = sites or {}
+    devices = sorted({s["device"] for s in services if s["device"] != control and s["device"] not in sites})
     out: dict[str, Any] = {"date": day.isoformat(), "control_device": control, "devices": {}}
     for dev in devices:
         icmp = [s for s in services if s["device"] == dev and s["kind"] == "icmp" and s["category"] != "infra"]
@@ -647,8 +876,25 @@ def summarize(
                     key=lambda b: -(b.get("border_jump_ms") or 0),
                 )[:10]
             ],
-            "incidents": [i for i in incs if i["device"] == dev],
+            "incidents": [
+                {**i, "seen_by": "extender" if i["device"] in sites else "cpe"}
+                for i in incs
+                if i["device"] == dev or sites.get(i["device"]) == dev
+            ],
         }
+        if v := (verdicts or {}).get(dev):
+            out["devices"][dev]["attribution"] = v
+        exts = []
+        for ext in sorted(d for d, site in sites.items() if site == dev):
+            rec: dict[str, Any] = {"device": ext}
+            if up := next((b for b in backhauls or [] if b["device"] == ext), None):
+                rec["backhaul"] = {
+                    k: round(up[k], 2) if isinstance(up[k], float) else up[k]
+                    for k in ("p50", "p95", "p99", "loss_pct", "samples")
+                }
+            exts.append(rec)
+        if exts:
+            out["devices"][dev]["extenders"] = exts
         mine = [c for c in clients or [] if c["device"] == dev]
         if mine:
             out["devices"][dev]["lan_clients"] = client_findings(
@@ -770,14 +1016,21 @@ def run(
     events = external.ioda_day(day, [("asn", str(a)) for a in cpe_asns] + [("country", country)], fetch)
     store.put_rows("external_events", day, events)
 
-    clients = daily_client(athena, day)
+    sites = extender_sites(athena, day)
+    clients = merge_extenders(daily_client(athena, day), sites)
     store.put_rows("daily_client", day, clients)
     client_svc = client_services(athena, day)
     store.put_rows("daily_client_service", day, client_svc)
     crosscheck = client_crosscheck(athena, day)
     store.put_rows("daily_crosscheck", day, crosscheck)
+    attribution, verdicts = attribute([h for h in segment_hours(athena, day, sites) if h["device"] != control], compare)
+    store.put_rows("daily_attribution", day, attribution)
 
-    summary = summarize(day, services, compare, borders, incs, names, control, clients, client_svc, crosscheck)
+    backhauls = backhaul(athena, day, sites)
+    summary = summarize(
+        day, services, compare, borders, incs, names, control, clients, client_svc, crosscheck, sites, verdicts,
+        backhauls,
+    )  # fmt: skip
     for dev, s in summary["devices"].items():
         s["external"] = external_context(dev, services, atlas, events, home_asn.get(dev))
     store.put_doc("summary", day, summary)
@@ -792,6 +1045,8 @@ def run(
         "daily_client": len(clients),
         "daily_client_service": len(client_svc),
         "daily_crosscheck": len(crosscheck),
+        "daily_attribution": len(attribution),
+        "extenders": len(sites),
     }
     log.info(json.dumps({"day": day.isoformat(), **counts}))
     return {"day": day.isoformat(), **counts}

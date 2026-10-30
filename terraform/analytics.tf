@@ -48,6 +48,15 @@ locals {
         ["wan_p50", "double"], ["wan_p90", "double"], ["rssi_avg", "double"], ["rssi_min", "double"],
         ["snr_avg", "double"], ["retry_pct", "double"], ["tx_rate_p50", "double"], ["ps_share", "double"],
         ["ping_p50", "double"], ["ping_p95", "double"], ["ping_first_p50", "double"], ["ping_loss_pct", "double"],
+        ["hop_p50", "double"], ["hop_p90", "double"], ["hop_flows", "bigint"], ["ext_rssi_avg", "double"],
+        ["ext_rssi_min", "double"], ["ext_tx_rate_p50", "double"], ["ext_ps_share", "double"],
+      ]
+    }
+    daily_attribution = {
+      description = "Per CPE, UTC hour and path segment (Wi-Fi, extender hop, backhaul, ISP access, beyond the ISP): the hour's median next to the day median"
+      columns = [
+        ["device", "string"], ["hour", "int"], ["local_hour", "int"], ["segment", "string"], ["p50", "double"],
+        ["baseline", "double"], ["added_ms", "double"], ["degraded", "boolean"],
       ]
     }
     daily_client_service = {
@@ -246,7 +255,9 @@ resource "aws_lambda_function_event_invoke_config" "analytics" {
 resource "aws_lambda_invocation" "analytics_backfill" {
   for_each      = toset(var.analytics_backfill)
   function_name = aws_lambda_function.analytics.function_name
-  input         = jsonencode({ date = each.value })
+  # A backfill rewrites the derived tables without posting the day's
+  # report again.
+  input = jsonencode({ date = each.value, report = false })
   # A new version of the analysis reruns the listed days.
   triggers = {
     code = data.archive_file.ingest.output_base64sha256

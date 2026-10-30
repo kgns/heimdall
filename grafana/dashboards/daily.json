@@ -26,14 +26,14 @@
         "query": {
           "refId": "device",
           "format": 1,
-          "rawSQL": "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'heartbeat'",
+          "rawSQL": "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'lan'",
           "connectionArgs": {
             "region": "__default",
             "catalog": "__default",
             "database": "__default"
           }
         },
-        "definition": "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'heartbeat'",
+        "definition": "SELECT DISTINCT device FROM heimdall.samples WHERE dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'lan'",
         "refresh": 2,
         "sort": 1,
         "multi": false,
@@ -416,6 +416,129 @@
     },
     {
       "type": "table",
+      "title": "Degraded hours: which part of the path",
+      "description": "From the daily analysis: hours (local time) where a part of the path was 30% and a few ms above its own day median, with the part that added the most named. segments lists every degraded part. Beyond the ISP, the daily summary uses the AWS control to tell the ISP's path from the services.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "added_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 1,
+          "rawSQL": "WITH a AS (SELECT * FROM heimdall.daily_attribution WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd')), top AS ( SELECT dt, hour, max_by(segment, added_ms) AS segment, max(added_ms) AS added_ms, array_join(array_agg(segment || ' +' || CAST(round(added_ms, 1) AS varchar)), ', ') AS segments, arbitrary(local_hour) AS local_hour FROM a WHERE degraded GROUP BY dt, hour ) SELECT dt AS day, local_hour, CASE segment WHEN 'wifi' THEN 'home Wi-Fi' WHEN 'ext_hop' THEN 'extender Wi-Fi' WHEN 'backhaul' THEN 'extender backhaul' WHEN 'access' THEN 'ISP access' WHEN 'beyond_isp' THEN 'beyond the ISP' ELSE segment END AS blame, added_ms, segments FROM top ORDER BY dt DESC, added_ms DESC",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 24,
+        "h": 8
+      },
+      "id": 6
+    },
+    {
+      "type": "timeseries",
+      "title": "Where the time goes, by day",
+      "description": "Each part's median over the day: where a typical connection's round trip is spent. The home Wi-Fi and the extender's Wi-Fi are different clients, so the parts do not add up.",
+      "datasource": {
+        "type": "grafana-athena-datasource",
+        "uid": "athena"
+      },
+      "interval": "1m",
+      "maxDataPoints": 400,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "always",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            },
+            "pointSize": 6
+          },
+          "min": 0,
+          "displayName": "${__field.labels.metric}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "sortBy": "Max"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-athena-datasource",
+            "uid": "athena"
+          },
+          "format": 0,
+          "rawSQL": "SELECT CAST(date_parse(dt, '%Y-%m-%d') AS timestamp) AS time, CASE segment WHEN 'wifi' THEN 'home Wi-Fi' WHEN 'ext_hop' THEN 'extender Wi-Fi' WHEN 'backhaul' THEN 'extender backhaul' WHEN 'access' THEN 'ISP access' WHEN 'beyond_isp' THEN 'beyond the ISP' ELSE segment END AS metric, arbitrary(baseline) AS value FROM heimdall.daily_attribution WHERE device = '$device' AND dt BETWEEN $__rawTimeFrom('yyyy-MM-dd') AND $__rawTimeTo('yyyy-MM-dd') GROUP BY 1, 2 ORDER BY 1",
+          "connectionArgs": {
+            "region": "__default",
+            "catalog": "__default",
+            "database": "__default"
+          }
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 38,
+        "w": 24,
+        "h": 8
+      },
+      "id": 7
+    },
+    {
+      "type": "table",
       "title": "Outage events from IODA",
       "description": "Outages IODA (Georgia Tech) detected for the ISP's AS and the country, from active probing, BGP and darknet traffic.",
       "datasource": {
@@ -450,11 +573,11 @@
       ],
       "gridPos": {
         "x": 0,
-        "y": 30,
+        "y": 46,
         "w": 24,
         "h": 6
       },
-      "id": 6
+      "id": 8
     }
   ]
 }

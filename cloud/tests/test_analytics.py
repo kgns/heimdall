@@ -267,3 +267,73 @@ def test_daily_client_and_findings():
     dev = s["devices"]["home"]
     assert [c["client"] for c in dev["lan_clients"]] == ["bbb", "aaa"]
     assert dev["client_crosscheck"][0]["gap_p50"] == 3.0 and "device" not in dev["client_crosscheck"][0]
+
+
+def test_extender_sites_and_merge():
+    sites = analytics.extender_sites(
+        FakeAthena({"'$.site'": [{"device": "ext1", "site": "home"}, {"device": "bad id", "site": "home"}]}), DAY
+    )
+    assert sites == {"ext1": "home"}
+    empty = ("medium", "band", "lan_busy_p50", "lan_night_p50", "wan_p50", "wan_p90", "rssi_min", "snr_avg",
+             "retry_pct", "ping_p50", "ping_p95", "ping_first_p50", "ping_loss_pct")  # fmt: skip
+    base = {**dict.fromkeys(empty), "node": "WX5600", "unanswered": 0, "roams": 0, "leaves": 0}
+    cpe_row = {**base, "device": "home", "client": "aaa", "flows": 50, "lan_p50": 12.0, "lan_p90": 40.0,
+               "rssi_avg": -95.0, "tx_rate_p50": 300.0, "ps_share": None}  # fmt: skip
+    ext_row = {**base, "device": "ext1", "client": "aaa", "flows": 40, "lan_p50": 4.0, "lan_p90": 35.0,
+               "rssi_avg": -79.0, "tx_rate_p50": 200.0, "ps_share": 0.5}  # fmt: skip
+    only_ext = {**ext_row, "client": "bbb", "lan_p50": 2.0, "lan_p90": 3.0, "rssi_avg": -50.0}
+    merged = analytics.merge_extenders([cpe_row, ext_row, only_ext], sites)
+    assert [(r["device"], r["client"]) for r in merged] == [("home", "aaa"), ("home", "bbb")]
+    a, b = merged
+    assert a["hop_p50"] == 4.0 and a["hop_flows"] == 40 and a["ext_rssi_avg"] == -79.0 and a["lan_p50"] == 12.0
+    assert b["flows"] == 0 and b["hop_p50"] == 2.0 and b["node"] == "WX5600" and b["lan_p50"] is None
+
+    # The extender's own signal decides; the CPE adds 8 ms beyond the hop.
+    [fa] = analytics.client_findings([a], [])
+    assert {"weak_signal", "slow_lan", "slow_extender_hop", "slow_backhaul"} <= set(fa["flags"])
+    assert "weak_link" not in fa["flags"]
+
+
+def test_attribution():
+    def hours(seg, values, n=100):
+        return [{"device": "home", "hour": h, "segment": seg, "p50": v, "n": n} for h, v in values.items()]
+
+    flat = dict.fromkeys(range(10), 4.0)
+    rows = (
+        hours("wifi", {**flat, 20: 20.0})
+        + hours("access", {**dict.fromkeys(range(10), 3.0), 20: 3.0, 21: 3.0, 22: 30.0})
+        + hours("wan", {**dict.fromkeys(range(10), 40.0), 20: 40.0, 21: 90.0, 22: 60.0})
+        + hours("backhaul", {1: 50.0}, n=5)
+    )
+    compare = [{"device": "home", "hour": 21, "service": "x", "attribution": "access_or_path"}]
+    recs, verdicts = analytics.attribute(rows, compare)
+    v = verdicts["home"]
+    assert v["latency_budget_ms"] == {"wifi": 4.0, "access": 3.0, "beyond_isp": 37.0}
+    # 20h: the home Wi-Fi; 21h: beyond the ISP, which the control probe did
+    # not see, so the ISP's path; 22h: the access network.
+    assert v["degraded_hours_by_cause"] == {"wifi": 1, "isp_path": 1, "access": 1}
+    worst = {w["local_hour"]: w["blame"] for w in v["degraded_hours"]}
+    assert worst == {23: "wifi", 0: "isp_path", 1: "access"}
+    assert not any(r["segment"] == "backhaul" for r in recs)
+    assert next(r for r in recs if r["segment"] == "wifi" and r["hour"] == 20)["degraded"]
+
+
+def test_summary_with_extender():
+    services = [{"device": "home", "kind": "icmp", "category": "x", "service": "y", "busy_inflation": None,
+                 "loss_pct": 0}]  # fmt: skip
+    incs = [
+        {"device": "home", "incident_id": "1", "scope": "service"},
+        {"device": "ext1", "incident_id": "2", "scope": "client"},
+    ]
+    s = analytics.summarize(
+        DAY, services, [], [], incs, {}, "aws-euc1", sites={"ext1": "home"},
+        verdicts={"home": {"latency_budget_ms": {"wifi": 3.0}}},
+        backhauls=[{"device": "ext1", "site": "home", "samples": 86000, "p50": 1.04, "p95": 2.0, "p99": 9.0,
+                    "loss_pct": 0.0}],
+    )  # fmt: skip
+    d = s["devices"]["home"]
+    assert list(s["devices"]) == ["home"]
+    assert [(i["incident_id"], i["seen_by"]) for i in d["incidents"]] == [("1", "cpe"), ("2", "extender")]
+    assert d["attribution"]["latency_budget_ms"] == {"wifi": 3.0}
+    assert d["extenders"] == [{"device": "ext1", "backhaul": {"p50": 1.04, "p95": 2.0, "p99": 9.0, "loss_pct": 0.0,
+                                                               "samples": 86000}}]  # fmt: skip
