@@ -1677,6 +1677,43 @@ BACKHAUL = (
 )
 
 
+# Where each node of the topology is drawn, as tiers from the top: the
+# categories the CPE measures, the internet, the ISP, the CPE, then the
+# CPE's own clients with the mesh extenders, and each extender's clients
+# below it. The node graph's layered layout only runs left to right, so
+# the positions are fixed here (fixedx, fixedy); every node needs one. The
+# panel opens centred on (0, 0), so the tiers are centred on it too.
+TOPO_X, TOPO_Y = 150, 160
+
+
+def tier(n: int) -> str:
+    """The y of tier n of the six, centred on 0."""
+    return f"{(n - 2.5) * TOPO_Y:.1f}"
+
+
+TOPO_POSITIONS = f"""
+t4 AS (
+  SELECT id, (row_number() OVER (ORDER BY grp, k) - (count(*) OVER () + 1) / 2.0) * {TOPO_X} AS x FROM (
+    SELECT 'client:' || client AS id, 0 AS grp, coalesce(name, client) AS k FROM c WHERE node = 'cpe'
+    UNION ALL SELECT 'node:' || node, 1, node FROM x
+  ) t
+),
+pos AS (
+  SELECT 'cat:' || category AS id,
+    (row_number() OVER (ORDER BY category) - (count(*) OVER () + 1) / 2.0) * {TOPO_X} AS x, {tier(0)} AS y FROM cat
+  UNION ALL SELECT 'internet', 0.0, {tier(1)}
+  UNION ALL SELECT 'isp', 0.0, {tier(2)}
+  UNION ALL SELECT 'cpe', 0.0, {tier(3)}
+  UNION ALL SELECT id, x, {tier(4)} FROM t4
+  UNION ALL SELECT 'client:' || c.client,
+    t4.x + (row_number() OVER (PARTITION BY c.node ORDER BY coalesce(c.name, c.client))
+      - (count(*) OVER (PARTITION BY c.node) + 1) / 2.0) * {TOPO_X},
+    {tier(5)}
+  FROM c JOIN t4 ON t4.id = 'node:' || c.node
+)
+"""
+
+
 def topology() -> dict[str, Any]:
     nodes = f"""
     WITH {TOPO_CLIENTS},
@@ -1688,7 +1725,9 @@ def topology() -> dict[str, Any]:
       SELECT category, approx_percentile(rtt_ms, 0.5) AS v, count(DISTINCT service) AS services
       FROM heimdall.samples WHERE {{R}} AND kind = 'tcp' AND status = 'ok' AND {{S}} AND target_id NOT LIKE 'client/%'
       GROUP BY 1
-    )
+    ),
+    {TOPO_POSITIONS},
+    n AS (
     SELECT 'internet' AS id, 'Internet' AS title, 'servers clients reached' AS subtitle,
       {ms("(SELECT approx_percentile(wan50, 0.5) FROM c)")} AS mainstat, 'clients, WAN p50' AS secondarystat,
       '#5794f2' AS color
@@ -1708,6 +1747,8 @@ def topology() -> dict[str, Any]:
     UNION ALL
     SELECT 'cat:' || category, category, format('%d services, CPE probe', services), {ms("v")}, 'TCP connect p50',
       '#ff9830' FROM cat
+    )
+    SELECT n.*, pos.x AS fixedx, pos.y AS fixedy FROM n JOIN pos ON pos.id = n.id
     """
     edges = f"""
     WITH {TOPO_CLIENTS},
@@ -1760,7 +1801,7 @@ def topology() -> dict[str, Any]:
     }
     L = Layout()
     p = [
-        L.place(graph, 24, 26),
+        L.place(graph, 24, 32),
         L.place(
             table(
                 "Clients",
