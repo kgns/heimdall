@@ -319,3 +319,22 @@ def test_format_wired_and_unknown_clients():
         "- client kagan-pc (aaa): WX5600-AP-17479, wired (eth1)"
     )
     assert line({}) == "- client aaa"
+
+
+def test_fast_incidents_are_posted_every_time(aws):
+    table, ssm = aws
+    ssm.put_parameter(Name=WEBHOOK, Type="SecureString", Value="https://hooks.slack.com/services/T/B/x")
+    posts = []
+    n = notifier(table, ssm, posts)
+    home = "ex7501-home"
+    fast = {"scope": "client", "cause": "lan_latency", "services": ["aaa"], "confirmed": True, "mode": "fast"}
+    for i in ("f1", "f2"):
+        n({"device": home, "events": [ev("incident_start", incident_id=i, **fast)]})
+        n({"device": home, "events": [ev("incident_end", incident_id=i, duration_s=40, **fast)]})
+    assert len(posts) == 4
+    assert ":zap: Fast detection" in posts[0][1] and posts[1][1].endswith(":zap:")
+    # A regular incident like them is not held back by them either.
+    regular = {k: v for k, v in fast.items() if k != "mode"}
+    n({"device": home, "events": [ev("incident_start", incident_id="r1", **regular)]})
+    assert len(posts) == 5 and "Fast detection" not in posts[-1][1]
+    assert table.get_item(Key={"device": home, "incident_id": "f1"})["Item"]["mode"] == "fast"

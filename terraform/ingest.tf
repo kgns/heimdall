@@ -20,6 +20,18 @@ data "aws_iam_policy_document" "lambda_assume" {
   }
 }
 
+# Until when (Unix ms) the probes report with their fast detector, as the
+# ingest tells them in its answers. scripts/demo sets it; 0 is off.
+resource "aws_ssm_parameter" "demo_fast_until" {
+  name  = "/heimdall/demo/fast_until"
+  type  = "String"
+  value = "0"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
 resource "aws_iam_role" "ingest" {
   name               = "heimdall-ingest"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
@@ -52,6 +64,11 @@ data "aws_iam_policy_document" "ingest" {
     sid       = "DeviceTokens"
     actions   = ["ssm:GetParameter"]
     resources = ["arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter/heimdall/devices/*"]
+  }
+  statement {
+    sid       = "DemoSwitch"
+    actions   = ["ssm:GetParameter"]
+    resources = [aws_ssm_parameter.demo_fast_until.arn]
   }
   statement {
     sid       = "DecryptDeviceTokens"
@@ -88,6 +105,7 @@ resource "aws_lambda_function" "ingest" {
       TOKEN_PREFIX      = "/heimdall/devices"
       NOTIFIER_FUNCTION = aws_lambda_function.notifier.function_name
       NAMES_TABLE       = aws_dynamodb_table.incidents.name
+      DEMO_PARAMETER    = aws_ssm_parameter.demo_fast_until.name
     }
   }
 

@@ -468,3 +468,65 @@ func TestClientIncidentEndsAtLastSlowMinute(t *testing.T) {
 		t.Errorf("duration %ds, want 900", got)
 	}
 }
+
+// The fast detector starts and ends a client incident within seconds.
+func TestFastDetector(t *testing.T) {
+	d := New(FastOptions())
+	type ev = sample.Sample
+	feed := func(from, to time.Duration, lan float64) []ev {
+		var out []ev
+		for ts := from; ts < to; ts += 500 * time.Millisecond {
+			d.Write(&sample.Sample{TS: t0.Add(ts).UnixMilli(), Kind: sample.KindFlow, TargetID: "flow/aaa",
+				Status: sample.StatusOK, Extra: map[string]any{"proto": "tcp", "client": "aaa", "lan_ms": lan + float64(ts%3)}})
+			if next := ts + 500*time.Millisecond; next%(5*time.Second) == 0 {
+				out = append(out, d.Tick(t0.Add(next))...)
+			}
+		}
+		return out
+	}
+	if evs := feed(0, 3*time.Minute, 2); len(evs) != 0 {
+		t.Fatalf("events while steady: %v", evs)
+	}
+	slowAt := 3 * time.Minute
+	evs := feed(slowAt, slowAt+40*time.Second, 40)
+	var start *ev
+	for i := range evs {
+		if evs[i].Extra["event"] == "incident_start" {
+			start = &evs[i]
+			break
+		}
+	}
+	if start == nil {
+		t.Fatalf("no incident in 40s: %v", evs)
+	}
+	if lag := time.UnixMilli(start.TS).Sub(t0.Add(slowAt)); lag > 20*time.Second {
+		t.Errorf("incident %v after the slowdown", lag)
+	} else {
+		t.Logf("incident %v after the slowdown", lag)
+	}
+	if start.Extra["confirmed"] != true || start.Extra["mode"] != "fast" {
+		t.Errorf("%+v", start.Extra)
+	}
+	if got := time.UnixMilli(start.Extra["started_ms"].(int64)); got.Before(t0.Add(slowAt)) || got.After(t0.Add(slowAt+10*time.Second)) {
+		t.Errorf("started at %v", got.Sub(t0))
+	}
+	recoverAt := slowAt + 40*time.Second
+	evs = feed(recoverAt, recoverAt+40*time.Second, 2)
+	var end *ev
+	for i := range evs {
+		if evs[i].Extra["event"] == "incident_end" {
+			end = &evs[i]
+		}
+	}
+	if end == nil {
+		t.Fatalf("no end in 40s: %v", evs)
+	}
+	if lag := time.UnixMilli(end.TS).Sub(t0.Add(recoverAt)); lag > 30*time.Second {
+		t.Errorf("end %v after the recovery", lag)
+	} else {
+		t.Logf("end %v after the recovery", lag)
+	}
+	if got := time.UnixMilli(end.Extra["ended_ms"].(int64)); !got.Equal(t0.Add(recoverAt)) {
+		t.Errorf("ended at %v", got.Sub(t0))
+	}
+}

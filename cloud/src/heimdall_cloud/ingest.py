@@ -147,6 +147,32 @@ class ASNLookup:
         return value
 
 
+DEMO_CACHE_SECONDS = 10
+
+
+class DemoSwitch:
+    """Reads, with a short cache, until when (Unix ms) the probes should
+    report with their fast detector: an SSM parameter that scripts/demo
+    sets. Missing or unreadable means off."""
+
+    def __init__(self, ssm: Any, name: str, clock: Callable[[], float] = time.monotonic):
+        self.ssm, self.name, self.clock = ssm, name, clock
+        self._at: float | None = None
+        self._until = 0
+
+    def until_ms(self) -> int:
+        if self._at is None or self.clock() - self._at >= DEMO_CACHE_SECONDS:
+            try:
+                self._until = int(self.ssm.get_parameter(Name=self.name)["Parameter"]["Value"].strip() or 0)
+            except self.ssm.exceptions.ParameterNotFound:
+                self._until = 0
+            except Exception as e:  # the switch never fails the ingest
+                log.warning("demo switch unreadable: %s", e)
+                self._until = 0
+            self._at = self.clock()
+        return self._until
+
+
 NAME_TTL_DAYS = 30
 
 
@@ -232,7 +258,9 @@ class Handler:
         now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
         notify: Callable[[str, list[dict[str, Any]]], None] | None = None,
         names: NameStore | None = None,
+        demo: DemoSwitch | None = None,
     ):
+        self.demo = demo
         self.tokens = TokenStore(ssm, token_prefix)
         self.firehose = firehose
         self.stream = stream
@@ -298,7 +326,10 @@ class Handler:
                     self.notify(batch.device, events)
                 except Exception as e:  # notifications never fail the ingest
                     log.error("notify failed: %s", e)
-        return response(200, {"accepted": len(records), "rejected": batch.rejected})
+        body: dict[str, Any] = {"accepted": len(records), "rejected": batch.rejected}
+        if self.demo:
+            body["fast_until_ms"] = self.demo.until_ms()
+        return response(200, body)
 
 
 _handler: Handler | None = None
@@ -328,6 +359,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             notify=notify,
             names=names,
         )
+        if param := os.environ.get("DEMO_PARAMETER"):
+            _handler.demo = DemoSwitch(_handler.tokens.ssm, param)
     return _handler(event, context)
 
 

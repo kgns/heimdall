@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Live demonstration of detection: switch the probes' fast detector on, then
+# slow this machine's network down and restore it.
+#
+#   scripts/demo on [minutes]   report with the fast detector (default 20 min)
+#   scripts/demo off            back to the regular detector only
+#   scripts/demo status         is fast detection on, and until when
+#   scripts/demo slow [ms]      add ms (default 40) of delay to this machine's
+#                               traffic and keep a connection going every
+#                               half second, so the probes see it (sudo)
+#   scripts/demo fix            remove the delay and stop the traffic (sudo)
+#
+# The probes learn about on/off from the ingest's answers, so a switch takes
+# up to ~20 s to reach them. The delay is on this machine's default-route
+# interface; HEIMDALL_DEMO_IFACE picks another.
+set -euo pipefail
+PROFILE="${AWS_PROFILE_HEIMDALL:-kgns}"
+REGION="${AWS_REGION_HEIMDALL:-eu-central-1}"
+PARAM=/heimdall/demo/fast_until
+PIDFILE="${TMPDIR:-/tmp}/heimdall-demo-traffic.pid"
+TC=/usr/sbin/tc
+
+ssm() { aws ssm "$@" --profile "$PROFILE" --region "$REGION"; }
+iface() { echo "${HEIMDALL_DEMO_IFACE:-$(ip route show default | awk '{print $5; exit}')}"; }
+
+stop_traffic() {
+	if [ -f "$PIDFILE" ]; then
+		kill "$(cat "$PIDFILE")" 2>/dev/null || true
+		rm -f "$PIDFILE"
+	fi
+}
+
+case "${1:-}" in
+on)
+	minutes="${2:-20}"
+	[[ "$minutes" =~ ^[0-9]+$ ]] && [ "$minutes" -ge 1 ] && [ "$minutes" -le 240 ] ||
+		{ echo "minutes must be 1-240" >&2; exit 2; }
+	until_ms=$(( ($(date +%s) + minutes * 60) * 1000 ))
+	ssm put-parameter --name "$PARAM" --type String --overwrite --value "$until_ms" >/dev/null
+	echo "fast detection on until $(date -d "@$((until_ms / 1000))" +%H:%M:%S)"
+	;;
+off)
+	ssm put-parameter --name "$PARAM" --type String --overwrite --value 0 >/dev/null
+	echo "fast detection off"
+	;;
+status)
+	until_ms=$(ssm get-parameter --name "$PARAM" --query Parameter.Value --output text)
+	if [ "$until_ms" -gt "$(( $(date +%s) * 1000 ))" ]; then
+		echo "fast detection on until $(date -d "@$((until_ms / 1000))" +%H:%M:%S)"
+	else
+		echo "fast detection off"
+	fi
+	dev="$(iface)"
+	echo "delay on $dev: $($TC qdisc show dev "$dev" root | grep -o 'delay [^ ]*' || echo none)"
+	;;
+slow)
+	ms="${2:-40}"
+	[[ "$ms" =~ ^[0-9]+$ ]] && [ "$ms" -ge 1 ] && [ "$ms" -le 1000 ] || { echo "ms must be 1-1000" >&2; exit 2; }
+	dev="$(iface)"
+	sudo "$TC" qdisc replace dev "$dev" root netem delay "${ms}ms"
+	stop_traffic
+	(while true; do curl -s -o /dev/null --max-time 5 https://www.google.com/generate_204 || true; sleep 0.5; done) \
+		>/dev/null 2>&1 &
+	echo $! >"$PIDFILE"
+	echo "added ${ms} ms on $dev; traffic running (pid $(cat "$PIDFILE"))"
+	;;
+fix)
+	dev="$(iface)"
+	sudo "$TC" qdisc del dev "$dev" root 2>/dev/null || true
+	# Keep the traffic a little longer, so the probes see the recovery
+	# rather than silence.
+	(sleep 45; kill "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; rm -f "$PIDFILE") >/dev/null 2>&1 &
+	echo "delay removed on $dev; traffic stops in 45 s"
+	;;
+*)
+	sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+	exit 2
+	;;
+esac

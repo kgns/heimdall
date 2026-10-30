@@ -104,6 +104,7 @@ type server struct {
 	envelopes []map[string]any
 	samples   []map[string]any
 	auth      []string
+	reply     string
 }
 
 func (s *server) handler(w http.ResponseWriter, r *http.Request) {
@@ -138,6 +139,10 @@ func (s *server) handler(w http.ResponseWriter, r *http.Request) {
 	}
 	delete(env, "samples")
 	s.envelopes = append(s.envelopes, env)
+	if s.reply != "" {
+		w.Write([]byte(s.reply))
+		return
+	}
 	w.Write([]byte(`{"accepted":1}`))
 }
 
@@ -336,5 +341,32 @@ func TestBackoff(t *testing.T) {
 		if wait < base/2 || wait > base {
 			t.Fatalf("step %d: wait %v outside [%v, %v]", i, wait, base/2, base)
 		}
+	}
+}
+
+func TestKickAndReply(t *testing.T) {
+	s := &server{reply: `{"accepted":1,"fast_until_ms":1793400000000}`}
+	srv := httptest.NewTLSServer(http.HandlerFunc(s.handler))
+	defer srv.Close()
+	buf := NewBuffer(1 << 20)
+	rec := sample.NewRecorder("dev1", nil, buf)
+	var mu sync.Mutex
+	var got Reply
+	u := newUploader(t, srv, buf, func(o *Options) {
+		o.Interval = time.Hour
+		o.OnReply = func(r Reply) { mu.Lock(); got = r; mu.Unlock() }
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { u.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+
+	rec.Emit(sample.Sample{Kind: sample.KindEvent, Status: sample.StatusOK})
+	u.Kick()
+	waitFor(t, "kicked upload", func() bool { return s.count() == 1 })
+	mu.Lock()
+	defer mu.Unlock()
+	if got.FastUntilMs != 1793400000000 {
+		t.Fatalf("reply %+v", got)
 	}
 }

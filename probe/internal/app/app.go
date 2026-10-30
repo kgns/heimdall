@@ -13,6 +13,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/kgns/heimdall/probe/internal/collectors/self"
@@ -90,6 +91,7 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		sinks = append(sinks, upBuf)
 	}
 	var det *detect.Detector
+	var fast *fastDetector
 	if cfg.Detect.Enabled {
 		opt := detect.DefaultOptions()
 		opt.Warmup = cfg.Detect.Warmup
@@ -102,6 +104,14 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		opt.LocalNode = cfg.Collectors.WiFi.Node
 		det = detect.New(opt)
 		sinks = append(sinks, det)
+		if f := cfg.Detect.Fast; f.Enabled {
+			fo := detect.FastOptions()
+			fo.Tick, fo.Warmup = f.Tick, f.Warmup
+			fo.AccessServices, fo.DelegatedNodes = opt.AccessServices, opt.DelegatedNodes
+			fo.BackhaulServices, fo.LocalNode = opt.BackhaulServices, opt.LocalNode
+			fast = &fastDetector{det: detect.New(fo), tick: f.Tick}
+			sinks = append(sinks, fast.det)
+		}
 	}
 	rec := sample.NewRecorder(device, h.Now, sinks...)
 	defer rec.Close()
@@ -268,17 +278,42 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 			}
 		}
 	}
+	// up is set further down; the jobs only run once the scheduler starts.
+	var up *uploader.Uploader
+	emitDetected := func(evs []sample.Sample) {
+		urgent := false
+		for _, ev := range evs {
+			if name, _ := ev.Extra["event"].(string); strings.HasPrefix(name, "incident_") {
+				log.Info(name, "scope", ev.Extra["scope"], "cause", ev.Extra["cause"],
+					"services", ev.Extra["services"], "id", ev.Extra["incident_id"], "mode", ev.Extra["mode"])
+				urgent = true
+			}
+			rec.Emit(ev)
+		}
+		// Incidents go out at once rather than with the next batch.
+		if urgent && up != nil {
+			up.Kick()
+		}
+	}
 	if det != nil {
 		sched.Add(scheduler.Job{
 			Name: "detect", Interval: time.Minute, NoJitter: true,
+			Run: func(context.Context) { emitDetected(det.Tick(h.Now())) },
+		})
+		jobCounts["detect"]++
+	}
+	if fast != nil {
+		sched.Add(scheduler.Job{
+			Name: "detect/fast", Interval: fast.tick, NoJitter: true,
 			Run: func(context.Context) {
-				for _, ev := range det.Tick(h.Now()) {
-					if name, _ := ev.Extra["event"].(string); strings.HasPrefix(name, "incident_") {
-						log.Info(name, "scope", ev.Extra["scope"], "cause", ev.Extra["cause"],
-							"services", ev.Extra["services"], "id", ev.Extra["incident_id"])
-					}
-					rec.Emit(ev)
+				evs, change := fast.tick1(h.Now())
+				switch change {
+				case "on":
+					log.Info("fast detection on", "until", time.UnixMilli(fast.until.Load()))
+				case "off":
+					log.Info("fast detection off")
 				}
+				emitDetected(evs)
 			},
 		})
 		jobCounts["detect"]++
@@ -321,6 +356,9 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 	if det != nil {
 		det.SetClientContext(coll.clientContext)
 	}
+	if fast != nil {
+		fast.det.SetClientContext(coll.clientContext)
+	}
 	if cfg.Collectors.LAN.Enabled {
 		coll.discoverLAN()
 	}
@@ -346,10 +384,14 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 			}
 		},
 	})
-	var up *uploader.Uploader
 	if upBuf != nil {
+		var onReply func(uploader.Reply)
+		if fast != nil {
+			onReply = func(r uploader.Reply) { fast.until.Store(r.FastUntilMs) }
+		}
 		up, err = uploader.New(upBuf, uploader.Options{
-			URL: cfg.Upload.URL, Token: token, Device: device, ProbeVersion: version,
+			OnReply: onReply,
+			URL:     cfg.Upload.URL, Token: token, Device: device, ProbeVersion: version,
 			Interval: cfg.Upload.Interval, Timeout: cfg.Upload.Timeout,
 			MaxBatch: cfg.Upload.MaxBatch, MaxBatchBytes: int(cfg.Upload.MaxBatchBytes),
 			MinBackoff: 5 * time.Second, MaxBackoff: 5 * time.Minute,
@@ -451,6 +493,11 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 
 	sched.Run(ctx)
 
+	if fast != nil && fast.active {
+		for _, ev := range fast.det.Flush(h.Now()) {
+			rec.Emit(ev)
+		}
+	}
 	if det != nil {
 		for _, ev := range det.Flush(h.Now()) {
 			rec.Emit(ev)
@@ -563,6 +610,39 @@ func hopSample(s sample.Sample, t *target.Target, via netip.Addr, r icmp.Result)
 }
 
 const resolveRetryInterval = 30 * time.Second
+
+// fastDetector runs the fast detector all the time, so that its baselines
+// stay warm, and reports what it finds only while the ingest asks for it
+// (until, in Unix milliseconds).
+type fastDetector struct {
+	det    *detect.Detector
+	tick   time.Duration
+	until  atomic.Int64
+	active bool // only touched by its scheduler job, then at shutdown
+}
+
+// tick1 runs one tick and returns the events to record, and "on" or "off"
+// when reporting started or stopped. Incidents found before reporting
+// started are forgotten, so they are reported as new ones; those open when
+// it stops are ended.
+func (f *fastDetector) tick1(now time.Time) ([]sample.Sample, string) {
+	want := now.UnixMilli() < f.until.Load()
+	switch {
+	case want && !f.active:
+		f.active = true
+		f.det.Forget()
+		return f.det.Tick(now), "on"
+	case !want && f.active:
+		f.active = false
+		f.det.Tick(now)
+		return f.det.EndAll(now, "fast_off"), "off"
+	case want:
+		return f.det.Tick(now), ""
+	default:
+		f.det.Tick(now)
+		return nil, ""
+	}
+}
 
 func activeIncidents(d *detect.Detector) []string {
 	if d == nil {

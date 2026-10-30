@@ -41,6 +41,15 @@ type Options struct {
 	HTTPClient     *http.Client
 	Log            *slog.Logger
 	DrainAfterStop time.Duration
+	// OnReply receives the server's answer to every accepted batch.
+	OnReply func(Reply)
+}
+
+// Reply is what the ingest answers to an accepted batch.
+type Reply struct {
+	// FastUntilMs, when in the future, asks the probe to run its fast
+	// detector until then.
+	FastUntilMs int64 `json:"fast_until_ms"`
 }
 
 // Uploader sends the buffer's contents in batches.
@@ -49,6 +58,8 @@ type Uploader struct {
 	buf    *Buffer
 	runID  string
 	client *http.Client
+
+	kick chan struct{}
 
 	mu          sync.Mutex
 	batchSeq    uint64
@@ -80,7 +91,7 @@ func New(buf *Buffer, opt Options) (*Uploader, error) {
 	if _, err := cryptoRead(id[:]); err != nil {
 		return nil, err
 	}
-	up := &Uploader{opt: opt, buf: buf, runID: hex.EncodeToString(id[:])}
+	up := &Uploader{opt: opt, buf: buf, runID: hex.EncodeToString(id[:]), kick: make(chan struct{}, 1)}
 	up.client = opt.HTTPClient
 	if up.client == nil {
 		up.client = up.defaultClient(u.Hostname())
@@ -89,6 +100,16 @@ func New(buf *Buffer, opt Options) (*Uploader, error) {
 }
 
 var cryptoRead = crand.Read
+
+// Kick asks for the next batch to be sent now instead of at the next
+// interval, for samples that should reach the server quickly. A kick
+// during a backoff waits for the backoff.
+func (u *Uploader) Kick() {
+	select {
+	case u.kick <- struct{}{}:
+	default:
+	}
+}
 
 // RunID identifies this probe process in every batch.
 func (u *Uploader) RunID() string { return u.runID }
@@ -150,6 +171,13 @@ func (u *Uploader) Run(ctx context.Context) {
 			u.drain()
 			return
 		case <-timer.C:
+		case <-u.kick:
+			if backoff > 0 {
+				continue
+			}
+			// Since Go 1.23 a stopped timer delivers no stale value, so
+			// the Reset below starts clean.
+			timer.Stop()
 		}
 		next := u.opt.Interval
 		// Stopping must not abort a request the server may already have
@@ -223,7 +251,10 @@ func (u *Uploader) sendOnce(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	status, err := u.post(ctx, body)
+	status, reply, err := u.post(ctx, body)
+	if err == nil && status == http.StatusOK && u.opt.OnReply != nil {
+		u.opt.OnReply(reply)
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.st.LastStatus = status
@@ -299,12 +330,13 @@ func (u *Uploader) encode(batch [][]byte, seq, dropped uint64) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func (u *Uploader) post(ctx context.Context, body []byte) (int, error) {
+func (u *Uploader) post(ctx context.Context, body []byte) (int, Reply, error) {
+	var reply Reply
 	ctx, cancel := context.WithTimeout(ctx, u.opt.Timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.opt.URL, bytes.NewReader(body))
 	if err != nil {
-		return 0, err
+		return 0, reply, err
 	}
 	req.Header.Set("Authorization", "Bearer "+u.opt.Token)
 	req.Header.Set("Content-Type", "application/octet-stream")
@@ -312,9 +344,14 @@ func (u *Uploader) post(ctx context.Context, body []byte) (int, error) {
 	req.Header.Set("User-Agent", "heimdall-probe/"+u.opt.ProbeVersion)
 	resp, err := u.client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, reply, err
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
-	return resp.StatusCode, nil
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode == http.StatusOK {
+		// An answer without these fields, or not JSON at all, leaves them
+		// zero.
+		_ = json.Unmarshal(raw, &reply)
+	}
+	return resp.StatusCode, reply, nil
 }

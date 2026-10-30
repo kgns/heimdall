@@ -299,3 +299,17 @@ def test_incident_events_are_forwarded(ssm):
 
     h.notify = boom
     assert h(event(batch(samples=[inc])))["statusCode"] == 200
+
+
+def test_demo_switch(ssm):
+    clock = [0.0]
+    h = handler(ssm)
+    h.demo = ingest.DemoSwitch(ssm, "/heimdall/demo/fast_until", clock=lambda: clock[0])
+    # Without the parameter the switch is off.
+    resp = h(event(batch()))
+    assert resp["statusCode"] == 200 and json.loads(resp["body"])["fast_until_ms"] == 0
+    ssm.put_parameter(Name="/heimdall/demo/fast_until", Type="String", Value="1793400000000", Overwrite=True)
+    # The answer is cached for a few seconds.
+    assert json.loads(h(event(batch()))["body"])["fast_until_ms"] == 0
+    clock[0] = 11
+    assert json.loads(h(event(batch()))["body"])["fast_until_ms"] == 1793400000000

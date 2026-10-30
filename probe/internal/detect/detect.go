@@ -23,7 +23,7 @@ import (
 )
 
 // rule holds the thresholds for one sample kind. A window is a number of
-// one-minute buckets.
+// buckets, one per tick.
 type rule struct {
 	window     int
 	minSamples int
@@ -46,6 +46,14 @@ var rules = map[sample.Kind]rule{
 	// connections in bursts, so the window is longer; the series has no
 	// loss, since an unanswered SYN says nothing about the LAN.
 	sample.KindFlow: {window: 5, minSamples: 8, ratio: 2.0, delta: 10},
+}
+
+// fastRules judge 5-second buckets. Only the kinds measured about once a
+// second, or more often, fill such buckets: pings and clients' own
+// connections.
+var fastRules = map[sample.Kind]rule{
+	sample.KindICMP: {window: 3, minSamples: 10, ratio: 1.5, delta: 10, minLost: 5, lossAbs: 0.10},
+	sample.KindFlow: {window: 3, minSamples: 6, ratio: 2.0, delta: 10},
 }
 
 const (
@@ -100,6 +108,20 @@ type Options struct {
 	// an extender's ping to the CPE; an anomaly there is a backhaul
 	// incident.
 	BackhaulServices []string
+	// Tick is how often Tick is called and how long a bucket lasts. Below
+	// a minute only the kinds in fastRules are judged.
+	Tick time.Duration
+	// Mode, when set, is added to every event as "mode", to tell the
+	// events of a second detector from the regular one's.
+	Mode string
+}
+
+// FastOptions detect within seconds, for demonstrations: 5-second ticks, a
+// short warmup and incidents confirmed at once.
+func FastOptions() Options {
+	o := DefaultOptions()
+	o.Tick, o.Warmup, o.ConfirmAfter, o.Mode = 5*time.Second, 2*time.Minute, 0, "fast"
+	return o
 }
 
 // ClientContext describes where a LAN client is attached: node, medium,
@@ -202,6 +224,7 @@ type Detector struct {
 	incidents  map[string]*Incident
 	started    time.Time
 	clientCtx  ClientContext
+	rules      map[sample.Kind]rule
 }
 
 // SetClientContext gives the detector what it reports about the clients
@@ -217,9 +240,16 @@ func New(opt Options) *Detector {
 	if opt.LocalNode == "" {
 		opt.LocalNode = "cpe"
 	}
+	if opt.Tick <= 0 {
+		opt.Tick = time.Minute
+	}
+	r := rules
+	if opt.Tick < time.Minute {
+		r = fastRules
+	}
 	return &Detector{
 		opt: opt, series: map[key]*series{}, dstChanges: map[string]time.Time{},
-		tls: map[string]*tlsStat{}, services: map[string]string{}, incidents: map[string]*Incident{},
+		tls: map[string]*tlsStat{}, services: map[string]string{}, incidents: map[string]*Incident{}, rules: r,
 	}
 }
 
@@ -238,7 +268,7 @@ func (d *Detector) Write(s *sample.Sample) error {
 		d.writeFlow(s)
 		return nil
 	}
-	if _, ok := rules[s.Kind]; !ok || s.TargetID == "" || s.Kind == sample.KindDNS && dnsLayerSkipped(s) {
+	if _, ok := d.rules[s.Kind]; !ok || s.TargetID == "" || s.Kind == sample.KindDNS && dnsLayerSkipped(s) {
 		return nil
 	}
 	k := key{target: s.TargetID, kind: s.Kind, dst: s.DstIP}
@@ -372,7 +402,7 @@ func minuteDegraded(sr *series, b bucket, r rule) bool {
 // evaluate closes the open bucket of sr and updates its state, returning an
 // anomaly_start or anomaly_end event on a transition.
 func (d *Detector) evaluate(sr *series, now time.Time) (sample.Sample, bool) {
-	r := rules[sr.key.kind]
+	r := d.rules[sr.key.kind]
 	closed := sr.buckets[len(sr.buckets)-1]
 	if closed.total > 0 {
 		sr.minutes++
@@ -403,7 +433,7 @@ func (d *Detector) evaluate(sr *series, now time.Time) (sample.Sample, bool) {
 	}
 	sr.cur, sr.curLoss = cur, curLoss
 
-	warm := sr.haveBase && time.Duration(sr.minutes)*time.Minute >= d.opt.Warmup
+	warm := sr.haveBase && time.Duration(sr.minutes)*d.opt.Tick >= d.opt.Warmup
 	cond, reason := false, ""
 	if warm {
 		if len(vals) >= r.minSamples && cur > sr.base*r.ratio && cur-sr.base > r.delta {
@@ -424,7 +454,7 @@ func (d *Detector) evaluate(sr *series, now time.Time) (sample.Sample, bool) {
 	if closed.total > 0 && sr.haveBase {
 		if minuteDegraded(sr, closed, r) {
 			if sr.onset.IsZero() {
-				sr.onset = now.Add(-time.Minute)
+				sr.onset = now.Add(-d.opt.Tick)
 			}
 			sr.lastBad = now
 		} else {
@@ -483,6 +513,9 @@ func (d *Detector) anomalyEvent(sr *series, event string, now time.Time) sample.
 		"event": event, "kind": string(sr.key.kind), "reason": sr.reason,
 		"current_ms": round(sr.cur), "baseline_ms": round(sr.base),
 		"loss": round(sr.curLoss), "baseline_loss": round(sr.baseLoss),
+	}
+	if d.opt.Mode != "" {
+		x["mode"] = d.opt.Mode
 	}
 	if event == "anomaly_start" {
 		x["started_ms"] = sr.since.UnixMilli()
@@ -815,6 +848,9 @@ func (d *Detector) incidentEvent(inc *Incident, event string, ss []*series, now 
 		"services": inc.services, "started_ms": inc.Onset.UnixMilli(), "detected_ms": inc.Started.UnixMilli(),
 		"confirmed": inc.confirmed,
 	}
+	if d.opt.Mode != "" {
+		x["mode"] = d.opt.Mode
+	}
 	switch event {
 	case "incident_confirmed":
 		x["duration_s"] = int64(now.Sub(inc.Onset).Seconds())
@@ -865,7 +901,19 @@ func severity(sr *series) float64 {
 
 // Flush ends every open incident, for a probe that is stopping; the next
 // run starts without them and would otherwise leave them open downstream.
-func (d *Detector) Flush(now time.Time) []sample.Sample {
+func (d *Detector) Flush(now time.Time) []sample.Sample { return d.EndAll(now, "probe_stopped") }
+
+// Forget drops the open incidents without reporting their end. The series
+// and their baselines stay, so an ongoing anomaly starts a new incident at
+// the next tick.
+func (d *Detector) Forget() {
+	d.mu.Lock()
+	clear(d.incidents)
+	d.mu.Unlock()
+}
+
+// EndAll ends every open incident with reason.
+func (d *Detector) EndAll(now time.Time, reason string) []sample.Sample {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	keys := make([]string, 0, len(d.incidents))
@@ -878,7 +926,7 @@ func (d *Detector) Flush(now time.Time) []sample.Sample {
 		// Still degraded as far as anyone knows: it ends with the probe.
 		d.incidents[k].lastBad = now
 		ev := d.incidentEvent(d.incidents[k], "incident_end", nil, now)
-		ev.Extra["reason"] = "probe_stopped"
+		ev.Extra["reason"] = reason
 		out = append(out, ev)
 		delete(d.incidents, k)
 	}

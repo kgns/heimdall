@@ -331,6 +331,16 @@ type Detect struct {
 	// BackhaulServices measure the link to the gateway, such as an
 	// extender's ping to the CPE; their anomalies are backhaul incidents.
 	BackhaulServices []string `yaml:"backhaul_services"`
+	// Fast is a second detector on short buckets, for demonstrations. It
+	// always learns, but reports only while the ingest asks for it.
+	Fast FastDetect `yaml:"fast"`
+}
+
+// FastDetect configures the fast detector: Tick is its bucket length.
+type FastDetect struct {
+	Enabled bool          `yaml:"enabled"`
+	Tick    time.Duration `yaml:"tick"`
+	Warmup  time.Duration `yaml:"warmup"`
 }
 
 // Trace configures ICMP traceroutes. One trace runs every Interval, to the
@@ -466,7 +476,8 @@ func Default() Config {
 		UDP:       UDP{Interval: 5 * time.Second, Timeout: 2 * time.Second},
 		Trace:     Trace{Interval: 30 * time.Second, MaxHops: 24, Probes: 2, Timeout: 2 * time.Second, Gap: 20 * time.Millisecond},
 		Detect: Detect{Enabled: true, Warmup: 15 * time.Minute, AccessServices: []string{"isp-hop", "isp-gateway"},
-			ConfirmAfter: 10 * time.Minute, BackhaulServices: []string{"backhaul"}},
+			ConfirmAfter: 10 * time.Minute, BackhaulServices: []string{"backhaul"},
+			Fast: FastDetect{Enabled: true, Tick: 5 * time.Second, Warmup: 2 * time.Minute}},
 		Discovery: Discovery{
 			Enabled: true, Interval: time.Hour, Timeout: 20 * time.Second,
 			// Istanbul.
@@ -873,6 +884,9 @@ func (c *Config) validateProbes(bad func(string, ...any)) {
 	}
 	if dt := c.Detect; dt.ConfirmAfter < 0 || dt.ConfirmAfter > 2*time.Hour {
 		bad("detect.confirm_after must be between 0 and 2h")
+	}
+	if f := c.Detect.Fast; f.Enabled && (f.Tick < time.Second || f.Tick > 30*time.Second || f.Warmup < f.Tick) {
+		bad("detect.fast.tick must be between 1s and 30s, and detect.fast.warmup at least one tick")
 	}
 	if tr := c.Trace; tr.Interval != 0 {
 		if tr.Interval < 10*time.Second {

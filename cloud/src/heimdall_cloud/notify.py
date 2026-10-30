@@ -208,7 +208,7 @@ def format_message(
     if name == "incident_end":
         return (
             f":large_green_circle: *{device}* resolved after {_fmt_duration(int(x.get('duration_s', 0)))}: "
-            f"{x.get('scope')} incident - {services}"
+            f"{x.get('scope')} incident - {services}" + (" :zap:" if x.get("mode") == "fast" else "")
         )
     icon = ":no_entry:" if x.get("cause") == "tls_blocked" else ":red_circle:"
     verb = "incident" if name in ("incident_start", "incident_confirmed") else "incident update"
@@ -239,6 +239,8 @@ def format_message(
             lines.append("AWS control: normal from eu-central-1, so probably the ISP's path to the service")
     if note:
         lines.append(note)
+    if x.get("mode") == "fast":
+        lines.append(":zap: Fast detection (demo mode, 5-second buckets)")
     if grafana:
         lines.append(f"{grafana}d/{'heimdall-topology' if home else 'heimdall-overview'}")
     return "\n".join(lines)
@@ -280,8 +282,12 @@ class Notifier:
 
     @staticmethod
     def signature(x: dict[str, Any]) -> str:
-        """What makes two incidents the same for notifications."""
-        return "|".join([x.get("scope", ""), x.get("cause", ""), ",".join(sorted(x.get("services") or []))])
+        """What makes two incidents the same for notifications. Those of the
+        fast detector never match the regular detector's."""
+        parts = [x.get("scope", ""), x.get("cause", ""), ",".join(sorted(x.get("services") or []))]
+        if x.get("mode"):
+            parts.insert(0, str(x["mode"]))
+        return "|".join(parts)
 
     def add_names(self, device: str, x: dict[str, Any]) -> None:
         """Fill in the DHCP hostname of the clients in an incident whose
@@ -337,6 +343,10 @@ class Notifier:
                 return False
             if self.item(device, x["incident_id"]).get("notified"):
                 return False
+            # A demonstration is repeated on purpose, so the fast detector's
+            # incidents are not held back as repeats.
+            if x.get("mode") == "fast":
+                return True
             return not self.recently_posted(device, x)
         return bool(self.item(device, x["incident_id"]).get("notified"))
 
@@ -354,6 +364,7 @@ class Notifier:
                     "cause": x.get("cause", ""),
                     "services": list(x.get("services") or []),
                     "signature": self.signature(x),
+                    "mode": x.get("mode") or "regular",
                     "confirmed": x.get("confirmed", True),
                     "started_ms": int(x.get("started_ms") or ev.get("ts_ms") or 0),
                     "ttl": ttl,
