@@ -48,6 +48,35 @@ CLOUD_DEVICE = "aws-euc1"
 # Services measured from the CPE; infra (ISP hops, resolvers, CPE counters)
 # and home (LAN clients) have their own dashboard.
 SERVICES = "category NOT IN ('infra', 'home')"
+# DHCP hostnames that do not tell one device from another: none ("*" in the
+# lease file), interface names, and names made of a MAC or other hex digits.
+# The notifier keeps the same list (GENERIC_HOSTNAME in notify.py).
+GENERIC_HOSTNAME = (
+    r"^(\*|localhost|unknown|none|wlan[0-9]*|eth[0-9]*|android[-_]?[0-9a-f]*|esp[-_][0-9a-f]+|espressif"
+    r"|[0-9a-f]{8,}|([0-9a-f]{2}[-:]?){6})$"
+)
+# nm: each LAN client's display name over the range, from the DHCP hostname
+# the CPE reports with its samples (collectors.lan.hostnames). Clients with
+# a generic hostname or none keep their ID; a hostname two clients share gets
+# the start of the ID ("iPhone #6be1"). Names come from the CPE only, so the
+# extender's samples are named through the shared client ID.
+NAMES = """
+nh AS (
+  SELECT coalesce(json_extract_scalar(extra, '$.client'), substr(target_id, 5)) AS client,
+    max_by(json_extract_scalar(extra, '$.client_name'), ts_ms) AS host
+  FROM heimdall.samples
+  WHERE {R} AND kind IN ('lan', 'flow') AND json_extract_scalar(extra, '$.client_name') IS NOT NULL
+  GROUP BY 1
+),
+nm AS (
+  SELECT client, CASE WHEN count(*) OVER (PARTITION BY lower(host)) > 1 THEN host || ' #' || substr(client, 1, 4)
+    ELSE host END AS label
+  FROM nh WHERE NOT regexp_like(lower(host), '{GH}')
+)
+"""
+# sel: the ID of the client $client names; a value that is no display name
+# is taken as an ID. Needs {NM} before it.
+SEL = "sel AS (SELECT coalesce(max(client), '$client') AS id FROM nm WHERE label = '$client')"
 TIME_SERIES, TABLE = 0, 1
 
 
@@ -59,6 +88,8 @@ def sql(text: str, **subs: str) -> str:
         text = text.replace("{INC}", INCIDENTS)
     if "{FLOWS}" in text or "{M}" in text:
         text = text.replace("{FLOWS}", FLOWS).replace("{M}", MATCHED)
+    if "{NM}" in text:
+        text = text.replace("{NM}", NAMES).replace("{SEL}", SEL)
     if "{D}" in text or "{ASN}" in text:
         text = text.replace("{D}", DAYS).replace("{ASN}", AS_NAMES)
     subs = {
@@ -69,6 +100,7 @@ def sql(text: str, **subs: str) -> str:
         "B": BUCKET,
         "S": SERVICES,
         "CLOUD": CLOUD_DEVICE,
+        "GH": GENERIC_HOSTNAME,
         **subs,
     }
     for k, v in subs.items():
@@ -1186,10 +1218,17 @@ SELECT ts_ms, {B} AS time, service, category,
 FROM heimdall.samples
 WHERE {R} AND kind = 'flow'
 """
+# The clients with connections in the range, by display name. The Athena
+# data source takes a variable's first column as its value, so the panels
+# turn the name back into the client ID with SEL.
 CLIENT = var(
     "client",
-    "SELECT DISTINCT json_extract_scalar(extra, '$.client') FROM heimdall.samples WHERE device = '$device'"
-    " AND dt = $__rawTimeTo('yyyy-MM-dd') AND kind = 'flow' ORDER BY 1",
+    """
+    WITH {NM}
+    SELECT DISTINCT coalesce(nm.label, json_extract_scalar(extra, '$.client')) AS client
+    FROM heimdall.samples LEFT JOIN nm ON nm.client = json_extract_scalar(extra, '$.client')
+    WHERE {R} AND kind = 'flow' ORDER BY 1
+    """,
 )
 CLIENT_DEVICE = var(
     "clientdev",
@@ -1232,15 +1271,15 @@ def clients() -> dict[str, Any]:
             table(
                 "Clients over the range",
                 """
-                WITH f AS ({FLOWS})
-                SELECT client, arbitrary(node) AS node, arbitrary(medium) AS medium, arbitrary(band) AS band,
-                  count(*) AS flows,
+                WITH {NM}, f AS ({FLOWS})
+                SELECT coalesce(arbitrary(nm.label), f.client) AS name, f.client AS client, arbitrary(node) AS node,
+                  arbitrary(medium) AS medium, arbitrary(band) AS band, count(*) AS flows,
                   approx_percentile(lan, 0.5) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan_p50,
                   approx_percentile(lan, 0.9) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan_p90,
                   approx_percentile(wan, 0.5) FILTER (WHERE status = 'ok') AS wan_p50,
                   100.0 * count_if(status = 'timeout') / count(*) AS unanswered,
                   avg(rssi) AS rssi
-                FROM f GROUP BY 1 ORDER BY flows DESC
+                FROM f LEFT JOIN nm ON nm.client = f.client GROUP BY f.client ORDER BY flows DESC
                 """,
                 "lan is the client's reply time to the server's SYN-ACK, measured at the CPE: the Wi-Fi or "
                 "Ethernet round trip plus the client's own delay. wan is SYN to SYN-ACK. unanswered are SYNs "
@@ -1254,9 +1293,9 @@ def clients() -> dict[str, Any]:
             series(
                 "LAN round trip p50 by client (TCP)",
                 """
-                WITH f AS ({FLOWS})
-                SELECT time, client || ' ' || node AS metric, approx_percentile(lan, 0.5) AS value
-                FROM f WHERE proto = 'tcp' AND status = 'ok' GROUP BY 1, 2 ORDER BY 1
+                WITH {NM}, f AS ({FLOWS})
+                SELECT time, coalesce(nm.label, f.client) || ' ' || node AS metric, approx_percentile(lan, 0.5) AS value
+                FROM f LEFT JOIN nm ON nm.client = f.client WHERE proto = 'tcp' AND status = 'ok' GROUP BY 1, 2 ORDER BY 1
                 """,
                 "ms",
             ),
@@ -1267,9 +1306,9 @@ def clients() -> dict[str, Any]:
             series(
                 "WAN round trip p50 by client",
                 """
-                WITH f AS ({FLOWS})
-                SELECT time, client || ' ' || node AS metric, approx_percentile(wan, 0.5) AS value
-                FROM f WHERE status = 'ok' GROUP BY 1, 2 ORDER BY 1
+                WITH {NM}, f AS ({FLOWS})
+                SELECT time, coalesce(nm.label, f.client) || ' ' || node AS metric, approx_percentile(wan, 0.5) AS value
+                FROM f LEFT JOIN nm ON nm.client = f.client WHERE status = 'ok' GROUP BY 1, 2 ORDER BY 1
                 """,
                 "ms",
             ),
@@ -1283,19 +1322,20 @@ def clients() -> dict[str, Any]:
             series(
                 "LAN, WAN and LAN ping of $client",
                 """
-                WITH f AS ({FLOWS})
+                WITH {NM}, {SEL}, f AS ({FLOWS})
                 SELECT time, 'lan (tcp handshake)' AS metric, approx_percentile(lan, 0.5) AS value
-                FROM f WHERE client = '$client' AND proto = 'tcp' AND status = 'ok' GROUP BY 1, 2
+                FROM f WHERE client = (SELECT id FROM sel) AND proto = 'tcp' AND status = 'ok' GROUP BY 1, 2
                 UNION ALL
                 SELECT time, 'wan (tcp handshake)', approx_percentile(wan, 0.5)
-                FROM f WHERE client = '$client' AND status = 'ok' GROUP BY 1, 2
+                FROM f WHERE client = (SELECT id FROM sel) AND status = 'ok' GROUP BY 1, 2
                 UNION ALL
                 SELECT {B}, 'lan ping (best of burst)', approx_percentile(rtt_ms, 0.5)
-                FROM heimdall.samples WHERE {R} AND kind = 'lan' AND status = 'ok' AND target_id = 'lan/$client' GROUP BY 1, 2
+                FROM heimdall.samples
+                WHERE {R} AND kind = 'lan' AND status = 'ok' AND target_id = 'lan/' || (SELECT id FROM sel) GROUP BY 1, 2
                 UNION ALL
                 SELECT {B}, 'lan ping (first of burst)',
                   approx_percentile(CAST(json_extract_scalar(extra, '$.burst_ms[0]') AS double), 0.5)
-                FROM heimdall.samples WHERE {R} AND kind = 'lan' AND target_id = 'lan/$client' GROUP BY 1, 2
+                FROM heimdall.samples WHERE {R} AND kind = 'lan' AND target_id = 'lan/' || (SELECT id FROM sel) GROUP BY 1, 2
                 ORDER BY 1
                 """,
                 "ms",
@@ -1309,13 +1349,13 @@ def clients() -> dict[str, Any]:
             table(
                 "Services of $client",
                 """
-                WITH f AS ({FLOWS})
+                WITH {NM}, {SEL}, f AS ({FLOWS})
                 SELECT category, service, count(*) AS flows,
                   approx_percentile(wan, 0.5) FILTER (WHERE status = 'ok') AS wan_p50,
                   approx_percentile(wan, 0.9) FILTER (WHERE status = 'ok') AS wan_p90,
                   approx_percentile(lan, 0.5) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan_p50,
                   count_if(status = 'timeout') AS unanswered
-                FROM f WHERE client = '$client' GROUP BY 1, 2 ORDER BY flows DESC
+                FROM f WHERE client = (SELECT id FROM sel) GROUP BY 1, 2 ORDER BY flows DESC
                 """,
                 units={"wan_p50": "ms", "wan_p90": "ms", "lan_p50": "ms"},
             ),
@@ -1329,10 +1369,12 @@ def clients() -> dict[str, Any]:
             series(
                 "Signal (RSSI) by client",
                 """
-                SELECT {B} AS time, json_extract_scalar(extra, '$.client') || ' ' || json_extract_scalar(extra, '$.node')
-                  || ' ' || json_extract_scalar(extra, '$.band') AS metric,
+                WITH {NM}
+                SELECT {B} AS time, coalesce(nm.label, json_extract_scalar(extra, '$.client')) || ' '
+                  || json_extract_scalar(extra, '$.node') || ' ' || json_extract_scalar(extra, '$.band') AS metric,
                   avg(CAST(json_extract_scalar(extra, '$.rssi') AS double)) AS value
-                FROM heimdall.samples WHERE {R} AND kind = 'wifi_sta' AND json_extract_scalar(extra, '$.rssi') IS NOT NULL
+                FROM heimdall.samples LEFT JOIN nm ON nm.client = json_extract_scalar(extra, '$.client')
+                WHERE {R} AND kind = 'wifi_sta' AND json_extract_scalar(extra, '$.rssi') IS NOT NULL
                 GROUP BY 1, 2 ORDER BY 1
                 """,
                 "dBm",
@@ -1346,10 +1388,12 @@ def clients() -> dict[str, Any]:
             series(
                 "Transmit retries to clients of the CPE",
                 """
-                SELECT {B} AS time, json_extract_scalar(extra, '$.client') AS metric,
+                WITH {NM}
+                SELECT {B} AS time, coalesce(nm.label, json_extract_scalar(extra, '$.client')) AS metric,
                   100.0 * sum(CAST(json_extract_scalar(extra, '$.tx_retries') AS double))
                     / nullif(sum(CAST(json_extract_scalar(extra, '$.tx_sent') AS double)), 0) AS value
-                FROM heimdall.samples WHERE {R} AND kind = 'wifi_sta' AND json_extract_scalar(extra, '$.source') = 'wl'
+                FROM heimdall.samples LEFT JOIN nm ON nm.client = json_extract_scalar(extra, '$.client')
+                WHERE {R} AND kind = 'wifi_sta' AND json_extract_scalar(extra, '$.source') = 'wl'
                 GROUP BY 1, 2 ORDER BY 1
                 """,
                 "percent",
@@ -1383,9 +1427,12 @@ def clients() -> dict[str, Any]:
             series(
                 "PHY rate to clients",
                 """
-                SELECT {B} AS time, json_extract_scalar(extra, '$.client') || ' ' || json_extract_scalar(extra, '$.node') AS metric,
+                WITH {NM}
+                SELECT {B} AS time, coalesce(nm.label, json_extract_scalar(extra, '$.client')) || ' '
+                  || json_extract_scalar(extra, '$.node') AS metric,
                   avg(CAST(json_extract_scalar(extra, '$.tx_rate_mbps') AS double)) AS value
-                FROM heimdall.samples WHERE {R} AND kind = 'wifi_sta'
+                FROM heimdall.samples LEFT JOIN nm ON nm.client = json_extract_scalar(extra, '$.client')
+                WHERE {R} AND kind = 'wifi_sta'
                 GROUP BY 1, 2 ORDER BY 1
                 """,
                 "Mbits",
@@ -1397,12 +1444,14 @@ def clients() -> dict[str, Any]:
             table(
                 "Wi-Fi events",
                 """
+                WITH {NM}
                 SELECT CAST(from_unixtime(ts_ms / 1000.0) AS timestamp) AS time,
-                  json_extract_scalar(extra, '$.event') AS event, json_extract_scalar(extra, '$.client') AS client,
+                  json_extract_scalar(extra, '$.event') AS event,
+                  coalesce(nm.label, json_extract_scalar(extra, '$.client')) AS client,
                   json_extract_scalar(extra, '$.node') AS node, json_extract_scalar(extra, '$.band') AS band,
                   coalesce(json_extract_scalar(extra, '$.from'), json_extract_scalar(extra, '$.prev_chanspec')) AS before,
                   json_extract_scalar(extra, '$.chanspec') AS chanspec
-                FROM heimdall.samples
+                FROM heimdall.samples LEFT JOIN nm ON nm.client = json_extract_scalar(extra, '$.client')
                 WHERE {R} AND kind = 'event' AND json_extract_scalar(extra, '$.event') LIKE 'wifi\\_%' ESCAPE '\\'
                 ORDER BY ts_ms DESC LIMIT 200
                 """,
@@ -1507,18 +1556,19 @@ def clients() -> dict[str, Any]:
 # extender. Queries are collapsed onto one line, so they hold no SQL
 # comments.
 TOPO_CLIENTS = """
+{NM},
 f AS (
   SELECT ts_ms, json_extract_scalar(extra, '$.client') AS client,
     coalesce(json_extract_scalar(extra, '$.node'), 'cpe') AS node,
     json_extract_scalar(extra, '$.medium') AS medium, json_extract_scalar(extra, '$.band') AS band,
-    json_extract_scalar(extra, '$.client_name') AS name, json_extract_scalar(extra, '$.proto') AS proto, status,
+    json_extract_scalar(extra, '$.proto') AS proto, status,
     CAST(json_extract_scalar(extra, '$.lan_ms') AS double) AS lan,
     CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan
   FROM heimdall.samples WHERE {R} AND kind = 'flow'
 ),
 fc AS (
   SELECT client, max_by(node, ts_ms) AS node, max_by(medium, ts_ms) AS medium, max_by(band, ts_ms) AS band,
-    max_by(name, ts_ms) AS name, count(*) AS flows,
+    count(*) AS flows,
     count(lan) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lann,
     approx_percentile(lan, 0.5) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan50,
     approx_percentile(lan, 0.9) FILTER (WHERE proto = 'tcp' AND status = 'ok') AS lan90,
@@ -1551,7 +1601,6 @@ eu AS (
 ),
 p AS (
   SELECT substr(target_id, 5) AS client, max_by(dst_ip, ts_ms) AS ip,
-    max_by(json_extract_scalar(extra, '$.client_name'), ts_ms) AS name,
     max_by(coalesce(json_extract_scalar(extra, '$.node'), 'cpe'), ts_ms) AS node,
     max_by(json_extract_scalar(extra, '$.medium'), ts_ms) AS medium,
     max_by(json_extract_scalar(extra, '$.band'), ts_ms) AS band,
@@ -1573,14 +1622,14 @@ m AS (
   FROM heimdall.samples WHERE {R} AND kind = 'mesh_node' GROUP BY 1
 ),
 c AS (
-  SELECT k.client, coalesce(fc.name, p.name) AS name,
+  SELECT k.client, nm.label AS name,
     coalesce(fc.node, p.node, e.node, ew.node, 'cpe') AS node,
     coalesce(fc.medium, p.medium, e.medium) AS medium, coalesce(ew.band, fc.band, p.band, e.band) AS band,
     coalesce(fc.flows, 0) AS flows, coalesce(fc.lann, 0) AS lann, fc.lan50, fc.lan90, fc.wan50, p.ping50,
     coalesce(ew.rssi, w.rssi) AS rssi, w.retry_pct, coalesce(e.hopn, 0) AS hopn, e.hop50, e.hop90
   FROM (SELECT client FROM fc UNION SELECT client FROM p UNION SELECT client FROM e) k
   LEFT JOIN fc ON fc.client = k.client LEFT JOIN p ON p.client = k.client LEFT JOIN w ON w.client = k.client
-  LEFT JOIN e ON e.client = k.client LEFT JOIN ew ON ew.client = k.client
+  LEFT JOIN e ON e.client = k.client LEFT JOIN ew ON ew.client = k.client LEFT JOIN nm ON nm.client = k.client
   WHERE k.client IS NOT NULL AND coalesce(p.ip, '') NOT IN (SELECT coalesce(ip, '') FROM m)
 ),
 x AS (
@@ -1750,11 +1799,13 @@ def topology() -> dict[str, Any]:
             table(
                 "Home network incidents",
                 f"""
-                WITH e AS (
+                WITH {{NM}},
+                names AS (SELECT map_agg(client, label) AS mp FROM nm),
+                e AS (
                   SELECT device, ts_ms, json_extract_scalar(extra, '$.event') AS ev,
                     json_extract_scalar(extra, '$.incident_id') AS id, json_extract_scalar(extra, '$.scope') AS scope,
                     json_extract_scalar(extra, '$.cause') AS cause,
-                    array_join(CAST(json_extract(extra, '$.services') AS array(varchar)), ', ') AS services,
+                    CAST(json_extract(extra, '$.services') AS array(varchar)) AS services,
                     CAST(json_extract_scalar(extra, '$.duration_s') AS bigint) AS duration_s,
                     CAST(json_extract_scalar(extra, '$.confirmed') AS boolean) AS confirmed,
                     CAST(json_extract_scalar(extra, '$.targets[0].current_ms') AS double) AS cur,
@@ -1777,8 +1828,9 @@ def topology() -> dict[str, Any]:
                   CAST(from_unixtime(end_ms / 1000.0) AS timestamp) AS end_time,
                   coalesce(duration_s, CAST((to_unixtime(now()) * 1000 - start_ms) / 1000 AS bigint)) AS duration,
                   CASE WHEN device = '$ext' THEN 'extender' ELSE 'cpe' END AS seen_by, scope, {CAUSE_TEXT} AS cause,
-                  services AS clients, cur AS current_ms, base AS baseline_ms, confirmed
-                FROM i WHERE start_ms IS NOT NULL ORDER BY start_ms DESC LIMIT 50
+                  array_join(transform(services, s -> coalesce(element_at(names.mp, s), s)), ', ') AS clients,
+                  cur AS current_ms, base AS baseline_ms, confirmed
+                FROM i CROSS JOIN names WHERE start_ms IS NOT NULL ORDER BY start_ms DESC LIMIT 50
                 """,
                 "Incidents of the home network, from the CPE's probe and the extender's: one client (its LAN round "
                 "trip, or on the extender its hop), several clients at once (home), or the extender's backhaul to "

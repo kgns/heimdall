@@ -4,7 +4,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from heimdall_cloud.notify import Notifier, Webhook, format_message, incident_events
+from heimdall_cloud.notify import Notifier, Webhook, client_label, format_message, incident_events
 
 os.environ.setdefault("AWS_DEFAULT_REGION", "eu-central-1")
 WEBHOOK = "/heimdall/slack/webhook_url"
@@ -162,6 +162,23 @@ def test_format_client_incident():
     assert "flow/aaa: LAN part of its connections 40 ms vs 3 ms" in text
     assert "- client aaa: cpe, 5GHz, -80 dBm, 52 Mbit/s" in text
     assert "AWS control" not in text and text.endswith("https://g/d/heimdall-topology")
+
+
+def test_client_label():
+    assert client_label("aaa", {"client_name": "kagan-pc"}) == "kagan-pc (aaa)"
+    for generic in ("wlan0", "*", "android-3f2a9c1d0b", "ESP_1A2B3C", "a1b2c3d4e5f6", "AA-BB-CC-DD-EE-FF", ""):
+        assert client_label("aaa", {"client_name": generic}) == "aaa", generic
+    assert client_label("aaa", {}) == "aaa"
+    ev = {
+        "extra": {
+            "event": "incident_start",
+            "scope": "client",
+            "cause": "weak_signal",
+            "services": ["aaa"],
+            "clients": {"aaa": {"node": "cpe", "client_name": "roborock-vacuum-a147"}},
+        }
+    }
+    assert "- client roborock-vacuum-a147 (aaa): cpe" in format_message("home", ev, None, "")
 
 
 def test_format_extender_incidents():

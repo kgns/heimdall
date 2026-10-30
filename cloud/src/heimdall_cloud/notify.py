@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -67,6 +68,24 @@ def device_label(device: str, sites: dict[str, str]) -> str:
     return f"{site} (extender {device})" if site else device
 
 
+# DHCP hostnames that do not tell one device from another: none ("*" in the
+# lease file), interface names, and names made of a MAC or other hex digits.
+# The dashboards keep the same list (GENERIC_HOSTNAME in gen_dashboards.py).
+GENERIC_HOSTNAME = re.compile(
+    r"^(\*|localhost|unknown|none|wlan[0-9]*|eth[0-9]*|android[-_]?[0-9a-f]*|esp[-_][0-9a-f]+|espressif"
+    r"|[0-9a-f]{8,}|([0-9a-f]{2}[-:]?){6})$"
+)
+
+
+def client_label(client: str, cx: dict[str, Any]) -> str:
+    """The client's DHCP hostname with its ID, or the ID alone when the
+    probe reports no hostname or a generic one."""
+    name = str(cx.get("client_name") or "").strip()
+    if not name or GENERIC_HOSTNAME.match(name.lower()):
+        return client
+    return f"{name} ({client})"
+
+
 def _client_line(client: str, cx: dict[str, Any]) -> str:
     parts = [str(cx.get("node") or "?")]
     for key, fmt in (
@@ -81,7 +100,7 @@ def _client_line(client: str, cx: dict[str, Any]) -> str:
         parts.append(f"{float(cx['tx_rate_mbps']):.0f} Mbit/s")
     if cx.get("backhaul"):
         parts.append(f"backhaul {cx['backhaul']}")
-    return f"- client {client}: " + ", ".join(parts)
+    return f"- client {client_label(client, cx)}: " + ", ".join(parts)
 
 
 def incident_events(samples: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
