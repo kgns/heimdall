@@ -52,7 +52,7 @@ CAUSES = {
     "extender": "the client is behind a mesh extender (its radio or backhaul)",
     "weak_link_extender": "low link rate between the client and its mesh extender",
     "wired_lan": "wired LAN (cable, switch or the client itself)",
-    "lan_latency": "the client's LAN path; the CPE's Wi-Fi readings show nothing unusual",
+    "lan_latency": "the client's LAN path; the access point's Wi-Fi readings show nothing unusual",
     "lan_wide": "several clients at once: the CPE or the whole home network",
     "extender_wide": "several clients of the mesh extender at once: its radios or the extender itself",
     "backhaul": "the link between the mesh extender and the CPE",
