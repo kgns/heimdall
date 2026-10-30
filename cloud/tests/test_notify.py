@@ -338,3 +338,9 @@ def test_fast_incidents_are_posted_every_time(aws):
     n({"device": home, "events": [ev("incident_start", incident_id="r1", **regular)]})
     assert len(posts) == 5 and "Fast detection" not in posts[-1][1]
     assert table.get_item(Key={"device": home, "incident_id": "f1"})["Item"]["mode"] == "fast"
+
+
+def test_warmup_posts_nothing(aws):
+    table, ssm = aws
+    posts = []
+    assert notifier(table, ssm, posts)({"warmup": True}) == {"posted": 0} and posts == []

@@ -88,7 +88,9 @@ resource "aws_lambda_function" "notifier" {
   handler          = "heimdall_cloud.notify.lambda_handler"
   filename         = data.archive_file.ingest.output_path
   source_code_hash = data.archive_file.ingest.output_base64sha256
-  memory_size      = 128
+  # More memory brings more CPU: a cold start at 128 MB took about 7 s
+  # before the first Slack post.
+  memory_size = 512
   timeout          = 30
 
   environment {

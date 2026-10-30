@@ -403,6 +403,12 @@ class Notifier:
             )
 
     def __call__(self, event: dict[str, Any], context: Any = None) -> dict[str, Any]:
+        if event.get("warmup"):
+            # Opens the connections a first post needs, so that one comes
+            # out as fast as later ones (scripts/demo on).
+            self.webhook.url()
+            self.item("warmup", "warmup")
+            return {"posted": 0}
         device = event["device"]
         posted = 0
         for ev in event.get("events", []):

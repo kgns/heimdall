@@ -38,6 +38,10 @@ on)
 	until_ms=$(( ($(date +%s) + minutes * 60) * 1000 ))
 	ssm put-parameter --name "$PARAM" --type String --overwrite --value "$until_ms" >/dev/null
 	echo "fast detection on until $(date -d "@$((until_ms / 1000))" +%H:%M:%S)"
+	# A cold notifier takes seconds longer for its first post.
+	aws lambda invoke --profile "$PROFILE" --region "$REGION" --function-name heimdall-notifier \
+		--cli-binary-format raw-in-base64-out --payload '{"warmup": true}' /dev/null >/dev/null &&
+		echo "notifier warmed up"
 	;;
 off)
 	ssm put-parameter --name "$PARAM" --type String --overwrite --value 0 >/dev/null
