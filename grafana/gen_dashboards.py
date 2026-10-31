@@ -1901,8 +1901,16 @@ def topology() -> dict[str, Any]:
                 "options": {"fields": ["frame"], "keepFields": False, "naming": {"asLabels": False}},
             },
             # Each frame keeps only the columns it uses: a nodes frame with a
-            # source column would be taken for edges.
-            {"id": "filterFields", "options": {"exclude": {"id": "byValue", "options": {"reducer": "allIsNull"}}}},
+            # source column would be taken for edges. A column without a
+            # value has no first non-null value; the allIsNull reducer does
+            # not do here, since it counts only numbers and calls every text
+            # column empty.
+            {
+                "id": "filterFields",
+                "options": {
+                    "exclude": {"id": "byValue", "options": {"reducer": "firstNotNull", "op": "eq", "value": None}}
+                },
+            },
         ],
         # Each service of a category node is one row of its details.
         "fieldConfig": {

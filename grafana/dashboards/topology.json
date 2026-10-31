@@ -131,7 +131,9 @@
             "exclude": {
               "id": "byValue",
               "options": {
-                "reducer": "allIsNull"
+                "reducer": "firstNotNull",
+                "op": "eq",
+                "value": null
               }
             }
           }
