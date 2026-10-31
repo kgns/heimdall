@@ -345,7 +345,10 @@ resource "aws_ecs_task_definition" "grafana" {
       GF_SECURITY_DISABLE_GRAVATAR              = "true"
       GF_SECURITY_STRICT_TRANSPORT_SECURITY     = "true"
       GF_USERS_ALLOW_SIGN_UP                    = "false"
-      GF_AUTH_ANONYMOUS_ENABLED                 = "false"
+      GF_AUTH_ANONYMOUS_ENABLED                 = tostring(var.grafana_anonymous)
+      GF_AUTH_ANONYMOUS_ORG_ROLE                = "Viewer"
+      GF_AUTH_ANONYMOUS_HIDE_VERSION            = "true"
+      GF_USERS_VIEWERS_CAN_EDIT                 = "false"
       GF_ANALYTICS_REPORTING_ENABLED            = "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES            = "false"
       GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES     = "false"

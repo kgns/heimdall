@@ -61,6 +61,12 @@ variable "ingest_burst_limit" {
   default = 20
 }
 
+variable "grafana_anonymous" {
+  description = "Let anyone with Grafana's URL view the dashboards without logging in, as a read-only Viewer. Viewers can also send their own queries to the Athena data source, so they can read every sample."
+  type        = bool
+  default     = true
+}
+
 variable "analytics_backfill" {
   description = "UTC days (YYYY-MM-DD) to run the daily analysis for during apply."
   type        = list(string)
