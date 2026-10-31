@@ -32,14 +32,20 @@ targets:
   - {id: k-root,         category: infra, service: k-root,        ip: 193.0.14.129}
   - {id: f-root,         category: infra, service: f-root,        ip: 192.5.5.241}
   - {id: aws-reflector,  category: infra, service: aws-reflector, host: reflector.lat.kgns.dev, protocols: [icmp, tcp, stamp]}
+  # The mesh extender's LAN address. The extender cannot report that it is
+  # down, so the CPE pings it; update the address if its DHCP lease moves.
+  - {id: extender,       category: home,  service: extender,      ip: 192.168.1.2}
 
 # The mesh extender runs its own probe (configs/extender.example.yaml),
 # which raises the incidents of its clients from its own Wi-Fi readings, so
 # this probe raises none for them. They still count towards home-wide
 # incidents. While the extender's probe is not running, nothing reports
-# incidents of a single client of the extender.
+# incidents of a single client of the extender. When the extender stops
+# answering the CPE's pings, the CPE raises an extender_unreachable
+# incident.
 detect:
   delegated_nodes: [WX5600-AP-17479]
+  offline_services: [extender]
 # Measured hosts are resolved through the ISP's resolvers, read from pppd's
 # session database, so the DNS the user configured on the CPE does not
 # decide which servers are measured.

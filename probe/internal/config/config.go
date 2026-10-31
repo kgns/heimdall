@@ -331,6 +331,9 @@ type Detect struct {
 	// BackhaulServices measure the link to the gateway, such as an
 	// extender's ping to the CPE; their anomalies are backhaul incidents.
 	BackhaulServices []string `yaml:"backhaul_services"`
+	// OfflineServices are home equipment this probe pings, such as a mesh
+	// extender; most pings unanswered is an extender_unreachable incident.
+	OfflineServices []string `yaml:"offline_services"`
 	// Fast is a second detector on short buckets, for demonstrations. It
 	// always learns, but reports only while the ingest asks for it.
 	Fast FastDetect `yaml:"fast"`

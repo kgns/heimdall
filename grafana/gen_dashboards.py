@@ -1722,7 +1722,8 @@ CAUSE_TEXT = (
     "WHEN 'channel_busy' THEN 'busy Wi-Fi channel' WHEN 'extender' THEN 'behind the extender' "
     "WHEN 'weak_link_extender' THEN 'slow link to the extender' WHEN 'extender_wide' THEN 'extender, several clients' "
     "WHEN 'wired_lan' THEN 'wired LAN' WHEN 'lan_latency' THEN 'LAN path, no Wi-Fi sign' "
-    "WHEN 'lan_wide' THEN 'whole home network' WHEN 'backhaul' THEN 'extender backhaul' ELSE cause END"
+    "WHEN 'lan_wide' THEN 'whole home network' WHEN 'backhaul' THEN 'extender backhaul' "
+    "WHEN 'extender_unreachable' THEN 'extender offline' ELSE cause END"
 )
 # The kind of an extender's link to the CPE, from the mesh topology's media
 # type. Only the kind: the WX5600 reports "IEEE 802.3u" (Fast Ethernet)

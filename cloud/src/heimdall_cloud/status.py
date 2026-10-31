@@ -290,6 +290,18 @@ def verdict(item: dict[str, Any], detail: dict[str, Any]) -> dict[str, Any]:
                 "Connect the extender to the gateway with a cable if possible",
             ],
         ),
+        "extender_unreachable": lambda: v(
+            "equipment",
+            "backhaul",
+            "The mesh extender went offline",
+            "The gateway stopped getting answers from the extender, so it is powered off, rebooting or "
+            "disconnected. Devices that were connected to it lost their connection or moved to the gateway, "
+            "often with a weaker signal.",
+            [
+                "Check that the extender is powered on and its light shows a connection",
+                "Restart the extender; if it keeps dropping, check its firmware and its link to the gateway",
+            ],
+        ),
         "wired_lan": lambda: v(
             "customer",
             "wifi",
@@ -421,7 +433,7 @@ def report(
                 others.append((d, o))
     affected = {_scope_segment(o.get("scope", ""), o.get("cause", "")) for d, o in others if d != control_device}
 
-    has_backhaul = extender or bool(detail.get("via_extender"))
+    has_backhaul = extender or bool(detail.get("via_extender")) or v["segment"] == "backhaul"
     path = []
     for seg, label in SEGMENTS:
         if seg == "backhaul" and not has_backhaul:

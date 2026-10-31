@@ -73,6 +73,11 @@ const (
 	dstChangeWindow = 10 * time.Minute
 	// updateEvery throttles incident_update events.
 	updateEvery = 5 * time.Minute
+	// offlineLoss of the pings in the window, and at least the rule's
+	// minLost, make equipment unreachable; an open incident lasts while the
+	// loss stays at offlineKeep or more.
+	offlineLoss = 0.4
+	offlineKeep = 0.2
 )
 
 // Options configure a Detector.
@@ -111,6 +116,12 @@ type Options struct {
 	// an extender's ping to the CPE; an anomaly there is a backhaul
 	// incident.
 	BackhaulServices []string
+	// OfflineServices are home equipment this probe pings, such as a mesh
+	// extender seen from the CPE. Most of their pings going unanswered is
+	// an extender_unreachable incident at once, without waiting for an
+	// anomaly; a slow reply alone is left to that equipment's own probe.
+	// A service that never answered raises nothing.
+	OfflineServices []string
 	// Tick is how often Tick is called and how long a bucket lasts. Below
 	// a minute only the kinds in fastRules are judged.
 	Tick time.Duration
@@ -176,6 +187,7 @@ type series struct {
 	since     time.Time
 	cur       float64
 	curLoss   float64
+	curLost   int
 	reason    string
 
 	// onset is the start of the current run of degraded minutes, zero
@@ -441,7 +453,7 @@ func (d *Detector) evaluate(sr *series, now time.Time) (sample.Sample, bool) {
 	if total > 0 {
 		curLoss = float64(lost) / float64(total)
 	}
-	sr.cur, sr.curLoss = cur, curLoss
+	sr.cur, sr.curLoss, sr.curLost = cur, curLoss, lost
 
 	warm := sr.haveBase && time.Duration(sr.minutes)*d.opt.Tick >= d.opt.Warmup
 	cond, reason := false, ""
@@ -548,10 +560,17 @@ func (d *Detector) anomalyEvent(sr *series, event string, now time.Time) sample.
 func (d *Detector) correlate(now time.Time) []sample.Sample {
 	byService := map[string][]*series{}
 	var access, dns, clients, backhaul []*series
+	offline := map[string][]*series{}
 	activeClients := 0
 	for _, sr := range d.series {
 		if sr.key.kind == sample.KindFlow && now.Sub(sr.lastSeen) <= 10*time.Minute {
 			activeClients++
+		}
+		if slices.Contains(d.opt.OfflineServices, sr.service) {
+			if d.unreachable(sr) {
+				offline[sr.service] = append(offline[sr.service], sr)
+			}
+			continue
 		}
 		if !sr.anomalous {
 			continue
@@ -607,6 +626,11 @@ func (d *Detector) correlate(now time.Time) []sample.Sample {
 		want["backhaul"] = &Incident{Scope: "backhaul", Cause: "backhaul", Category: "home", Service: backhaul[0].service}
 		members["backhaul"] = backhaul
 	}
+	for svc, ss := range offline {
+		k := "offline:" + svc
+		want[k] = &Incident{Scope: "backhaul", Cause: "extender_unreachable", Category: "home", Service: svc}
+		members[k] = ss
+	}
 	if len(clients) > 0 {
 		home := len(clients) >= d.opt.HomeMin && float64(len(clients)) >= d.opt.HomeFraction*float64(activeClients)
 		if home {
@@ -650,8 +674,8 @@ func (d *Detector) correlate(now time.Time) []sample.Sample {
 			w.ID, w.Started, w.lastSent = newID(), now, now
 			w.Onset, w.lastBad = now, now
 			for _, sr := range members[k] {
-				if sr.since.Before(w.Onset) {
-					w.Onset = sr.since
+				if s := sr.start(now); s.Before(w.Onset) {
+					w.Onset = s
 				}
 			}
 			w.services = serviceList(members[k], w.Service)
@@ -691,6 +715,38 @@ func (d *Detector) correlate(now time.Time) []sample.Sample {
 		}
 	}
 	return out
+}
+
+// unreachable reports whether most pings of an equipment series went
+// unanswered over its window. Equipment that never answered, such as a
+// wrong address, is not judged.
+func (d *Detector) unreachable(sr *series) bool {
+	if !sr.haveBase || sr.noLoss {
+		return false
+	}
+	if d.incidents["offline:"+sr.service] != nil {
+		return sr.curLoss >= offlineKeep
+	}
+	if sr.curLost < d.rules[sr.key.kind].minLost || sr.curLoss < offlineLoss {
+		return false
+	}
+	if !sr.anomalous {
+		sr.reason = "loss"
+	}
+	return true
+}
+
+// start is when the degradation of a series began: the start of its
+// anomaly, or of its run of degraded minutes when it is not anomalous
+// yet.
+func (sr *series) start(now time.Time) time.Time {
+	switch {
+	case sr.anomalous:
+		return sr.since
+	case !sr.onset.IsZero():
+		return sr.onset
+	}
+	return now
 }
 
 func sumLast(s []int, n int) int {

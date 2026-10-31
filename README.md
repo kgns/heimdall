@@ -361,6 +361,10 @@ On the extender's probe, its own clients are judged by its own readings:
 `roaming`, `weak_signal`, `radio_retransmissions` (its radio retransmits
 20% or more), `wired_lan` or `lan_latency`, and `extender_wide` for
 several of them at once. Its ping to the CPE opens `backhaul` incidents.
+The CPE pings the extender in turn (`detect.offline_services`): when most
+pings over the detector's window go unanswered it opens a `backhaul`
+incident with cause `extender_unreachable`, since a powered-off extender
+cannot report itself. An address that never answered raises nothing.
 
 Client, home and backhaul incidents carry each client's context (node,
 band, signal, retries, radio busy share) and link to the topology

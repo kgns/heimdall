@@ -56,6 +56,7 @@ CAUSES = {
     "lan_wide": "several clients at once: the CPE or the whole home network",
     "extender_wide": "several clients of the mesh extender at once: its radios or the extender itself",
     "backhaul": "the link between the mesh extender and the CPE",
+    "extender_unreachable": "the mesh extender stopped answering the CPE (powered off, rebooting or disconnected)",
 }
 
 # Scopes about the home network rather than the internet.
@@ -222,7 +223,12 @@ def format_message(
     for t in (x.get("targets") or [])[:5]:
         detail = f"{_fmt_ms(t.get('current_ms'))} vs {_fmt_ms(t.get('baseline_ms'))}"
         if "loss" in (t.get("reason") or ""):
-            detail += f", loss {100 * float(t.get('loss', 0)):.0f}%"
+            loss = f"loss {100 * float(t.get('loss', 0)):.0f}%"
+            # Without a single reply in the window there is no latency.
+            if t.get("current_ms"):
+                detail += f", {loss}"
+            else:
+                detail = f"no reply (normally {_fmt_ms(t.get('baseline_ms'))}), {loss}"
         if home and t.get("kind") == "flow":
             what = "hop between the extender and the client" if extender else "LAN part of its connections"
             target = str(t.get("target_id") or "")

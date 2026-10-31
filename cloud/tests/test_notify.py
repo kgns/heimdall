@@ -201,6 +201,33 @@ def test_format_extender_incidents():
     assert "- uplink (icmp, 192.168.1.1): 25 ms vs 1 ms" in text and text.endswith("d/heimdall-topology")
 
 
+def test_format_extender_unreachable():
+    offline = {
+        "extra": {
+            "event": "incident_start",
+            "scope": "backhaul",
+            "cause": "extender_unreachable",
+            "services": ["extender"],
+            "mode": "fast",
+            "targets": [
+                {
+                    "target_id": "extender",
+                    "kind": "icmp",
+                    "dst_ip": "192.168.1.2",
+                    "current_ms": 0,
+                    "baseline_ms": 1.2,
+                    "loss": 0.53,
+                    "reason": "loss",
+                }
+            ],
+        }
+    }
+    text = format_message("ex7501-home", offline, None, "")
+    assert text.startswith(":red_circle: *ex7501-home* incident: backhaul - extender")
+    assert "Likely cause: the mesh extender stopped answering the CPE" in text
+    assert "- extender (icmp, 192.168.1.2): no reply (normally 1 ms), loss 53%" in text
+
+
 def test_extender_incident_posted_under_its_site(aws):
     table, ssm = aws
     ssm.put_parameter(Name=WEBHOOK, Type="SecureString", Value="https://hooks.slack.com/services/T/B/x")

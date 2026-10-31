@@ -79,6 +79,21 @@ def test_service_verdict_follows_the_control_probe(control, party):
     assert v["party"] == party
 
 
+def test_extender_offline_seen_by_the_gateway(aws):
+    table, ssm = aws
+    n = notifier(table, ssm, [])
+    n.sites = {"wx5600-ap-17479": "ex7501-home"}
+    _incident(n, "ex7501-home", incident_id="x1", scope="backhaul", cause="extender_unreachable",
+              services=["extender"], clients=None,
+              targets=[{"target_id": "extender", "kind": "icmp", "dst_ip": "192.168.1.2", "current_ms": 0,
+                        "baseline_ms": 1.2, "loss": 0.53, "reason": "loss"}])  # fmt: skip
+    r = report(table, "ex7501-home", "x1", n.sites, "aws-euc1", 1_793_020_010_000)
+    assert r["incident"]["seen_by"] == "gateway"
+    assert r["verdict"]["party"] == "equipment" and r["verdict"]["headline"] == "The mesh extender went offline"
+    states = {p["id"]: p["state"] for p in r["path"]}
+    assert states["backhaul"] == "fault" and states["wifi"] == "normal"
+
+
 def test_every_cause_has_a_verdict():
     from heimdall_cloud.notify import CAUSES
 

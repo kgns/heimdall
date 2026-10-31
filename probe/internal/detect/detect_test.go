@@ -571,3 +571,101 @@ func TestFastDetectorIsHomeOnly(t *testing.T) {
 		}
 	}
 }
+
+// The CPE's pings to a powered-off extender raise an incident within
+// seconds in the fast detector, and its end soon after the extender is
+// back; a slow extender alone raises nothing.
+func TestExtenderUnreachable(t *testing.T) {
+	o := FastOptions()
+	o.OfflineServices = []string{"extender"}
+	d := New(o)
+	type ev = sample.Sample
+	// One ping a second; a lost one is reported after its 2 s timeout.
+	feed := func(from, to time.Duration, up bool, rtt float64) []ev {
+		var out []ev
+		for ts := from; ts < to; ts += time.Second {
+			s := sample.Sample{TS: t0.Add(ts).UnixMilli(), Kind: sample.KindICMP, TargetID: "extender",
+				Service: "extender", Category: "home", DstIP: "192.168.1.2", Status: sample.StatusOK}
+			if up {
+				v := rtt + float64(ts/time.Second%3)
+				s.RTTms = &v
+			} else {
+				s.Status, s.TS = sample.StatusTimeout, t0.Add(ts+2*time.Second).UnixMilli()
+			}
+			d.Write(&s)
+			if next := ts + time.Second; next%(5*time.Second) == 0 {
+				out = append(out, d.Tick(t0.Add(next))...)
+			}
+		}
+		return out
+	}
+	find := func(evs []ev, name string) *ev {
+		for i := range evs {
+			if evs[i].Extra["event"] == name {
+				return &evs[i]
+			}
+		}
+		return nil
+	}
+	if evs := find(feed(0, 3*time.Minute, true, 2), "incident_start"); evs != nil {
+		t.Fatalf("incident while steady: %+v", evs.Extra)
+	}
+	if evs := find(feed(3*time.Minute, 4*time.Minute, true, 60), "incident_start"); evs != nil {
+		t.Fatalf("incident for a slow extender: %+v", evs.Extra)
+	}
+	feed(4*time.Minute, 6*time.Minute, true, 2)
+
+	offAt := 6 * time.Minute
+	start := find(feed(offAt, offAt+time.Minute, false, 0), "incident_start")
+	if start == nil {
+		t.Fatal("no incident in a minute")
+	}
+	if lag := time.UnixMilli(start.TS).Sub(t0.Add(offAt)); lag > 15*time.Second {
+		t.Errorf("incident %v after the extender went off", lag)
+	} else {
+		t.Logf("incident %v after the extender went off", lag)
+	}
+	x := start.Extra
+	if x["scope"] != "backhaul" || x["cause"] != "extender_unreachable" || x["confirmed"] != true {
+		t.Fatalf("%+v", x)
+	}
+	if got := time.UnixMilli(x["started_ms"].(int64)); got.Before(t0.Add(offAt)) || got.After(t0.Add(offAt+10*time.Second)) {
+		t.Errorf("started at %v", got.Sub(t0))
+	}
+	if ts := x["targets"].([]map[string]any); len(ts) != 1 || ts[0]["reason"] != "loss" || ts[0]["dst_ip"] != "192.168.1.2" {
+		t.Errorf("targets %v", x["targets"])
+	}
+
+	backAt := offAt + time.Minute
+	evs := feed(backAt, backAt+time.Minute, true, 2)
+	if again := find(evs, "incident_start"); again != nil {
+		t.Errorf("new incident after the recovery: %+v", again.Extra)
+	}
+	end := find(evs, "incident_end")
+	if end == nil {
+		t.Fatal("no end in a minute")
+	}
+	if lag := time.UnixMilli(end.TS).Sub(t0.Add(backAt)); lag > 20*time.Second {
+		t.Errorf("end %v after the extender came back", lag)
+	} else {
+		t.Logf("end %v after the extender came back", lag)
+	}
+}
+
+// An address that never answered is not reported as unreachable.
+func TestExtenderNeverAnswered(t *testing.T) {
+	o := FastOptions()
+	o.OfflineServices = []string{"extender"}
+	d := New(o)
+	for i := range 300 {
+		d.Write(&sample.Sample{TS: t0.Add(time.Duration(i) * time.Second).UnixMilli(), Kind: sample.KindICMP,
+			TargetID: "extender", Service: "extender", Category: "home", DstIP: "192.168.1.2", Status: sample.StatusTimeout})
+		if (i+1)%5 == 0 {
+			for _, e := range d.Tick(t0.Add(time.Duration(i+1) * time.Second)) {
+				if e.Extra["event"] == "incident_start" {
+					t.Fatalf("%+v", e.Extra)
+				}
+			}
+		}
+	}
+}

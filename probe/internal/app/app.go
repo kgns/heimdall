@@ -99,6 +99,7 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 		opt.ConfirmAfter = cfg.Detect.ConfirmAfter
 		opt.DelegatedNodes = cfg.Detect.DelegatedNodes
 		opt.BackhaulServices = cfg.Detect.BackhaulServices
+		opt.OfflineServices = cfg.Detect.OfflineServices
 		// The Wi-Fi collector's readings in the client context are this
 		// node's own.
 		opt.LocalNode = cfg.Collectors.WiFi.Node
@@ -109,6 +110,7 @@ func Run(ctx context.Context, cfg config.Config, version string, h Host, log *sl
 			fo.Tick, fo.Warmup = f.Tick, f.Warmup
 			fo.AccessServices, fo.DelegatedNodes = opt.AccessServices, opt.DelegatedNodes
 			fo.BackhaulServices, fo.LocalNode = opt.BackhaulServices, opt.LocalNode
+			fo.OfflineServices = opt.OfflineServices
 			fast = &fastDetector{det: detect.New(fo), tick: f.Tick}
 			sinks = append(sinks, fast.det)
 		}
