@@ -56,8 +56,11 @@ func TestRefreshEX7501(t *testing.T) {
 	gw := &target.Target{ID: "gateway", Category: "infra", Service: "isp-gateway", Auto: config.AutoGateway}
 	cf := target.New("cf", "infra", "cloudflare", netip.MustParseAddr("1.1.1.1"))
 	mgmt := target.New("mgmt", "infra", "oops", netip.MustParseAddr("62.58.244.17"))
+	// Home equipment on the LAN is probed; an internet target there is not.
+	ext := target.New("extender", "home", "extender", netip.MustParseAddr("192.168.1.2"))
+	lan := target.New("lan", "infra", "oops", netip.MustParseAddr("192.168.1.3"))
 	ev := &events{}
-	w := New(fsys, iface, []*target.Target{gw, cf, mgmt}, ev.emit, quiet())
+	w := New(fsys, iface, []*target.Target{gw, cf, mgmt, ext, lan}, ev.emit, quiet())
 
 	st, err := w.Refresh()
 	if err != nil {
@@ -78,7 +81,13 @@ func TestRefreshEX7501(t *testing.T) {
 	if _, ok := mgmt.Dst(); ok {
 		t.Fatal("management network target not blocked")
 	}
-	if len(ev.named("target_blocked")) != 1 || len(ev.named("wan_change")) != 0 {
+	if _, ok := ext.Dst(); !ok {
+		t.Fatal("home target on the LAN blocked")
+	}
+	if _, ok := lan.Dst(); ok {
+		t.Fatal("non-home LAN target not blocked")
+	}
+	if len(ev.named("target_blocked")) != 2 || len(ev.named("wan_change")) != 0 {
 		t.Fatalf("events %+v", ev.s)
 	}
 

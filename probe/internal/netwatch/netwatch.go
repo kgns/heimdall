@@ -98,8 +98,14 @@ func (w *Watcher) Refresh() (State, error) {
 			}
 		}
 		allowed := hasDef
-		if a := t.Addr(); allowed && a.IsValid() {
-			allowed = egressAllowed(routes, def, a)
+		if a := t.Addr(); a.IsValid() {
+			if t.Category == "home" {
+				// Home equipment, such as a mesh extender seen from the CPE,
+				// is on the LAN, not behind the default route.
+				_, allowed = sysinfo.Lookup(routes, a)
+			} else if allowed {
+				allowed = egressAllowed(routes, def, a)
+			}
 		}
 		if t.SetBlocked(!allowed) {
 			w.log.Warn("target probing toggled", "target", t.ID, "dst", t.Addr(), "blocked", !allowed)
