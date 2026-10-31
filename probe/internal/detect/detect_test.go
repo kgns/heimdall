@@ -530,3 +530,44 @@ func TestFastDetector(t *testing.T) {
 		t.Errorf("ended at %v", got.Sub(t0))
 	}
 }
+
+// A slow spell that is over before the confirmation is not confirmed, even
+// while the long HTTP window still holds it.
+func TestNoConfirmationAfterRecovery(t *testing.T) {
+	d := New(DefaultOptions())
+	h := feed{target: "tv-plus/tvplus.com.tr", service: "tv-plus", category: "streaming", dst: "203.0.113.7",
+		kind: sample.KindHTTP, perMinute: 1, rtt: 80}
+	run(d, 0, 30, h)
+	slow := h
+	slow.rtt = 2700
+	ev := run(d, 30, 40, slow)
+	ev2 := run(d, 40, 70, h)
+	if len(ev["incident_start"])+len(ev2["incident_start"]) != 1 {
+		t.Fatalf("%v %v", ev, ev2)
+	}
+	if n := len(ev["incident_confirmed"]) + len(ev2["incident_confirmed"]); n != 0 {
+		t.Fatalf("confirmed %d times after the recovery", n)
+	}
+	if len(ev2["incident_end"]) != 1 || ev2["incident_end"][0].Extra["confirmed"] != false {
+		t.Fatalf("end %v", ev2["incident_end"])
+	}
+}
+
+// The fast detector leaves internet services to the regular one.
+func TestFastDetectorIsHomeOnly(t *testing.T) {
+	d := New(FastOptions())
+	for i := range 600 {
+		at := t0.Add(time.Duration(i) * 500 * time.Millisecond)
+		v := 20.0
+		if i > 400 {
+			v = 200
+		}
+		d.Write(&sample.Sample{TS: at.UnixMilli(), Kind: sample.KindICMP, TargetID: "youtube/www.youtube.com",
+			Service: "youtube", Category: "streaming", DstIP: "203.0.113.9", Status: sample.StatusOK, RTTms: &v})
+		if (i+1)%10 == 0 {
+			if evs := d.Tick(at.Add(500 * time.Millisecond)); len(evs) != 0 {
+				t.Fatalf("fast detector judged a service: %v", evs)
+			}
+		}
+	}
+}

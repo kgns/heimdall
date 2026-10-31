@@ -65,6 +65,9 @@ const (
 	baselineAlpha = 1.0 / 60
 	enterTicks    = 2
 	exitTicks     = 3
+	// stillBad is how many ticks after its last degraded bucket an
+	// incident still counts as ongoing for its confirmation.
+	stillBad = 2
 	// dstChangeWindow links a service anomaly to a destination change
 	// that happened shortly before it.
 	dstChangeWindow = 10 * time.Minute
@@ -114,13 +117,17 @@ type Options struct {
 	// Mode, when set, is added to every event as "mode", to tell the
 	// events of a second detector from the regular one's.
 	Mode string
+	// HomeOnly judges only the home network: clients' connections and the
+	// series in category "home", such as the backhaul. Internet services
+	// vary too much over a few seconds for the fast detector.
+	HomeOnly bool
 }
 
 // FastOptions detect within seconds, for demonstrations: 5-second ticks, a
 // short warmup and incidents confirmed at once.
 func FastOptions() Options {
 	o := DefaultOptions()
-	o.Tick, o.Warmup, o.ConfirmAfter, o.Mode = 5*time.Second, 2*time.Minute, 0, "fast"
+	o.Tick, o.Warmup, o.ConfirmAfter, o.Mode, o.HomeOnly = 5*time.Second, 2*time.Minute, 0, "fast", true
 	return o
 }
 
@@ -269,6 +276,9 @@ func (d *Detector) Write(s *sample.Sample) error {
 		return nil
 	}
 	if _, ok := d.rules[s.Kind]; !ok || s.TargetID == "" || s.Kind == sample.KindDNS && dnsLayerSkipped(s) {
+		return nil
+	}
+	if d.opt.HomeOnly && s.Category != "home" {
 		return nil
 	}
 	k := key{target: s.TargetID, kind: s.Kind, dst: s.DstIP}
@@ -663,7 +673,10 @@ func (d *Detector) correlate(now time.Time) []sample.Sample {
 					cur.Cause = clientCause(cur.Scope, cur.context, d.opt.LocalNode)
 				}
 			}
-			if !cur.confirmed && now.Sub(cur.Started) >= d.opt.ConfirmAfter {
+			// Only a problem that is still there is confirmed: a long window
+			// keeps a series anomalous for minutes after its last degraded
+			// minute.
+			if !cur.confirmed && now.Sub(cur.Started) >= d.opt.ConfirmAfter && now.Sub(cur.lastBad) <= stillBad*d.opt.Tick {
 				cur.confirmed, cur.services, cur.lastSent = true, svcs, now
 				out = append(out, d.incidentEvent(cur, "incident_confirmed", members[k], now))
 				continue
