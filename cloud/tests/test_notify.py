@@ -89,9 +89,10 @@ def test_incident_events_filter():
         {"kind": "event", "extra": '{"event":"dst_change"}'},
         {"kind": "icmp", "extra": '{"event":"incident_start"}'},
         {"kind": "event", "extra": None},
+        {"kind": "event", "extra": {"event": "start", "version": "x"}},
     ]
-    [got] = incident_events(samples)
-    assert got["extra"]["incident_id"] == "a"
+    got, start = incident_events(samples)
+    assert got["extra"]["incident_id"] == "a" and start["extra"]["event"] == "start"
 
 
 def test_access_incident_gets_ioda_note(aws):

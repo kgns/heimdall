@@ -24,7 +24,7 @@ from collections.abc import Callable
 from importlib import resources
 from typing import Any
 
-from heimdall_cloud.notify import CAUSES, GENERIC_HOSTNAME, client_label
+from heimdall_cloud.notify import CAUSES, GENERIC_HOSTNAME, OPEN_MAX_AGE_S, client_label
 
 log = logging.getLogger()
 log.setLevel(logging.INFO)
@@ -429,8 +429,16 @@ def report(
     others: list[tuple[str, dict[str, Any]]] = []
     for d in dict.fromkeys([*homes, control_device]):
         for o in overlapping(table, d, started, window_end):
-            if not (d == device and o["incident_id"] == incident_id):
-                others.append((d, o))
+            if d == device and (
+                o["incident_id"] == incident_id
+                # The same problem seen by the probe's other detector.
+                or (o.get("scope"), o.get("cause")) == (item.get("scope"), item.get("cause"))
+            ):
+                continue
+            # Left open by a probe that stopped without ending it.
+            if o.get("ended_ms") is None and started - int(o.get("started_ms") or 0) > OPEN_MAX_AGE_S * 1000:
+                continue
+            others.append((d, o))
     affected = {_scope_segment(o.get("scope", ""), o.get("cause", "")) for d, o in others if d != control_device}
 
     has_backhaul = extender or bool(detail.get("via_extender")) or v["segment"] == "backhaul"

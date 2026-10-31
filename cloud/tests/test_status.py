@@ -94,6 +94,28 @@ def test_extender_offline_seen_by_the_gateway(aws):
     assert states["backhaul"] == "fault" and states["wifi"] == "normal"
 
 
+def test_twins_and_leftovers_are_not_other_problems(aws):
+    table, ssm = aws
+    n = notifier(table, ssm, [])
+    n.sites = {"wx5600-ap-17479": "ex7501-home"}
+    off = {"scope": "backhaul", "cause": "extender_unreachable", "services": ["extender"], "clients": None}
+    _incident(n, "ex7501-home", incident_id="fast", **off)
+    # The regular detector's view of the same outage.
+    _incident(n, "ex7501-home", incident_id="regular", mode="regular", **off)
+    # Open for days on the CPE: its probe stopped without ending it.
+    _incident(n, "ex7501-home", incident_id="old", scope="service", cause="path", services=["youtube"], clients=None,
+              started_ms=1_793_020_000_000 - 3 * 86_400_000)  # fmt: skip
+    # Left open by the extender, which lost power, then ended at its restart.
+    _incident(n, "wx5600-ap-17479", incident_id="cut", started_ms=1_793_010_000_000)
+    n({"device": "wx5600-ap-17479", "events": [{"ts_ms": 1_793_015_000_000, "extra": {"event": "start"}}]})
+    cut = table.get_item(Key={"device": "wx5600-ap-17479", "incident_id": "cut"})["Item"]
+    assert cut["status"] == "closed" and cut["ended_ms"] == 1_793_015_000_000 and cut["end_reason"] == "probe_restarted"
+
+    r = report(table, "ex7501-home", "fast", n.sites, "aws-euc1", 1_793_020_010_000)
+    assert {c["label"]: c["state"] for c in r["checks"]}["Home network"] == "normal"
+    assert {p["id"]: p["state"] for p in r["path"]}["path"] == "normal"
+
+
 def test_every_cause_has_a_verdict():
     from heimdall_cloud.notify import CAUSES
 

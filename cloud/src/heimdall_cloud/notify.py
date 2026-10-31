@@ -123,13 +123,15 @@ def _labels(x: dict[str, Any]) -> dict[str, str]:
 
 
 def incident_events(samples: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Pick the incident events out of ingested samples, with extra decoded."""
+    """Pick the incident events out of ingested samples, with extra decoded,
+    and the probe's start event, which ends what an earlier run left open."""
     out = []
     for s in samples:
         if s.get("kind") != "event" or not s.get("extra"):
             continue
         extra = json.loads(s["extra"]) if isinstance(s["extra"], str) else s["extra"]
-        if str(extra.get("event", "")).startswith("incident_"):
+        name = str(extra.get("event", ""))
+        if name.startswith("incident_") or name == "start":
             out.append({**s, "extra": extra})
     return out
 
@@ -292,6 +294,38 @@ class Notifier:
         for item in resp.get("Items", []):
             out.update(item.get("services") or [])
         return out
+
+    def close_left_open(self, device: str, start_ms: int) -> int:
+        """Closes the device's incidents that were open when its probe
+        started again. A probe that lost power never sent their end, so they
+        end at the restart; nothing is posted, since the real end is not
+        known."""
+        from boto3.dynamodb.conditions import Attr, Key
+
+        kw: dict[str, Any] = {
+            "KeyConditionExpression": Key("device").eq(device),
+            "FilterExpression": Attr("status").eq("open") & Attr("started_ms").lt(start_ms),
+        }
+        closed = 0
+        for _ in range(5):
+            resp = self.table.query(**kw)
+            for item in resp.get("Items", []):
+                self.table.update_item(
+                    Key={"device": device, "incident_id": item["incident_id"]},
+                    UpdateExpression="SET #s = :c, ended_ms = :e, duration_s = :d, end_reason = :r",
+                    ExpressionAttributeNames={"#s": "status"},
+                    ExpressionAttributeValues={
+                        ":c": "closed",
+                        ":e": start_ms,
+                        ":d": max(0, (start_ms - int(item.get("started_ms") or start_ms)) // 1000),
+                        ":r": "probe_restarted",
+                    },
+                )
+                closed += 1
+            if "LastEvaluatedKey" not in resp:
+                break
+            kw["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+        return closed
 
     @staticmethod
     def signature(x: dict[str, Any]) -> str:
@@ -458,6 +492,10 @@ class Notifier:
         posted = 0
         for ev in event.get("events", []):
             x = ev["extra"]
+            if x["event"] == "start":
+                closed = self.close_left_open(device, int(ev.get("ts_ms") or self.now() * 1000))
+                log.info(json.dumps({"device": device, "event": "start", "closed": closed}))
+                continue
             self.record(device, ev)
             if device == self.control:
                 continue
