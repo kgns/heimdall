@@ -65,14 +65,14 @@ collectors:
   lan:
     salt_file: /opt/heimdall/etc/lan.salt
     burst: 2
-    # DHCP hostnames with client samples: prototype on the owner's own
-    # network only, like flows.names: raw.
+    # DHCP hostnames with client samples, so that the dashboards and
+    # notifications name the home's devices.
     hostnames: true
   flows:
     enabled: true
-    # raw names servers and addresses: for this prototype on the owner's
-    # own network only. A product would use category or service.
-    names: raw
+    # Connections are recorded by service only (YouTube, GitHub, other):
+    # no server names and no server or client addresses.
+    names: service
   wifi:
     interval: 10s
   processes:

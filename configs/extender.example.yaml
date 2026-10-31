@@ -73,9 +73,9 @@ collectors:
     enabled: true
     interface: br0
     position: bridge
-    # raw names servers and addresses: for this prototype on the owner's
-    # own network only.
-    names: raw
+    # Connections are recorded by service only: no server names and no
+    # server or client addresses.
+    names: service
   wifi:
     interval: 10s
     driver: mtk
