@@ -358,7 +358,7 @@ resource "aws_ecs_task_definition" "grafana" {
       GF_PLUGINS_PREINSTALL_DISABLED            = "true"
       GF_AWS_ALLOWED_AUTH_PROVIDERS             = "default"
       GF_AWS_ASSUME_ROLE_ENABLED                = "false"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH = "/etc/grafana/dashboards/overview.json"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH = "/etc/grafana/dashboards/topology.json"
       GF_LOG_MODE                               = "console"
     } : { name = k, value = v }]
     secrets = [

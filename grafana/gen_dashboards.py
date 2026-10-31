@@ -1743,6 +1743,24 @@ BACKHAUL = (
 # fixedy); every node needs one. The panel opens centred on (0, 0), so the
 # whole drawing is moved to centre on it.
 TOPO_X, TOPO_Y = 150, 170
+# Services listed in a category node's details, one per row.
+TOPO_SERVICES = 10
+
+
+def _service_names() -> str:
+    """A SQL expression that turns the service ID in `service` into the
+    catalog's display name."""
+    ids, names = [], []
+    for line in (OUT.parent.parent / "catalog" / "targets.yaml").read_text().splitlines():
+        s = line.strip()
+        if s.startswith("- id: "):
+            ids.append(s[6:].strip())
+        elif s.startswith("name: ") and len(names) < len(ids):
+            names.append(s[6:].strip().strip("'\""))
+    cases = " ".join(f"WHEN '{i}' THEN '{n.replace(chr(39), chr(39) * 2)}'" for i, n in zip(ids, names, strict=False))
+    return f"CASE service {cases} ELSE service END"
+
+
 # The gap between the CPE, the ISP and the internet.
 TOPO_GAP = 2 * TOPO_X
 TOPO_POSITIONS = f"""
@@ -1780,18 +1798,38 @@ pos AS (
 
 
 def topology() -> dict[str, Any]:
-    nodes = f"""
+    # Nodes and edges come from one query, as rows tagged with the frame
+    # they belong to, and the panel splits them. With two queries the edges
+    # could arrive first, and the node graph would draw the nodes it derives
+    # from them with its own layout until the positioned nodes arrived.
+    details = ", ".join(f"element_at(svcs, {i}) AS detail__{i}" for i in range(1, TOPO_SERVICES + 1))
+    no_details = ", ".join(f"CAST(NULL AS varchar) AS detail__{i}" for i in range(1, TOPO_SERVICES + 1))
+    graph_sql = f"""
     WITH {TOPO_CLIENTS},
     isp AS (
       SELECT approx_percentile(rtt_ms, 0.5) AS v FROM heimdall.samples
       WHERE {{R}} AND kind = 'icmp' AND status = 'ok' AND target_id = 'isp-hop1'
+    ),
+    cs AS (
+      SELECT category, service, approx_percentile(rtt_ms, 0.5) AS v
+      FROM heimdall.samples WHERE {{R}} AND kind = 'tcp' AND status = 'ok' AND {{S}} AND target_id NOT LIKE 'client/%'
+      GROUP BY 1, 2
     ),
     cat AS (
       SELECT category, approx_percentile(rtt_ms, 0.5) AS v, count(DISTINCT service) AS services
       FROM heimdall.samples WHERE {{R}} AND kind = 'tcp' AND status = 'ok' AND {{S}} AND target_id NOT LIKE 'client/%'
       GROUP BY 1
     ),
+    cl AS (
+      SELECT category, array_agg(format('%s · %.0f ms', {_service_names()}, v) ORDER BY v DESC) AS svcs
+      FROM cs GROUP BY 1
+    ),
     {TOPO_POSITIONS},
+    ext AS (
+      SELECT x.node, x.backhaul, approx_percentile(s.rtt_ms, 0.5) AS v
+      FROM x LEFT JOIN heimdall.samples s ON s.dst_ip = x.ip AND {{R}} AND s.kind = 'lan' AND s.status = 'ok'
+      GROUP BY 1, 2
+    ),
     n AS (
     SELECT 'internet' AS id, 'Internet' AS title, 'servers clients reached' AS subtitle,
       {ms("(SELECT approx_percentile(wan50, 0.5) FROM c)")} AS mainstat, 'clients, WAN p50' AS secondarystat,
@@ -1812,24 +1850,8 @@ def topology() -> dict[str, Any]:
     UNION ALL
     SELECT 'cat:' || category, category, format('%d services, CPE probe', services), {ms("v")}, 'TCP connect p50',
       '#ff9830' FROM cat
-    )
-    SELECT n.*, pos.x AS fixedx, pos.y AS fixedy FROM n JOIN pos ON pos.id = n.id
-    """
-    edges = f"""
-    WITH {TOPO_CLIENTS},
-    isp AS (
-      SELECT approx_percentile(rtt_ms, 0.5) AS v FROM heimdall.samples
-      WHERE {{R}} AND kind = 'icmp' AND status = 'ok' AND target_id = 'isp-hop1'
     ),
-    ext AS (
-      SELECT x.node, x.backhaul, approx_percentile(s.rtt_ms, 0.5) AS v
-      FROM x LEFT JOIN heimdall.samples s ON s.dst_ip = x.ip AND {{R}} AND s.kind = 'lan' AND s.status = 'ok'
-      GROUP BY 1, 2
-    ),
-    cat AS (
-      SELECT DISTINCT category FROM heimdall.samples
-      WHERE {{R}} AND kind = 'tcp' AND status = 'ok' AND {{S}} AND target_id NOT LIKE 'client/%'
-    )
+    ed AS (
     SELECT 'e:' || client AS id, 'client:' || client AS source,
       CASE WHEN node = 'cpe' THEN 'cpe' ELSE 'node:' || node END AS target,
       CASE WHEN hop50 IS NOT NULL AND node <> 'cpe' THEN 'hop ' || {ms("hop50")}
@@ -1849,6 +1871,15 @@ def topology() -> dict[str, Any]:
       'clients, WAN p50', '#5794f2'
     UNION ALL
     SELECT 'e:cat:' || category, 'internet', 'cat:' || category, '', '', '#ff9830' FROM cat
+    )
+    SELECT 'nodes' AS frame, n.id, n.title, n.subtitle, n.mainstat, n.secondarystat, n.color,
+      pos.x AS fixedx, pos.y AS fixedy, {details},
+      CAST(NULL AS varchar) AS source, CAST(NULL AS varchar) AS target
+    FROM n JOIN pos ON pos.id = n.id LEFT JOIN cl ON n.id = 'cat:' || cl.category
+    UNION ALL
+    SELECT 'edges', id, CAST(NULL AS varchar), CAST(NULL AS varchar), mainstat, secondarystat, color,
+      CAST(NULL AS double), CAST(NULL AS double), {no_details}, source, target
+    FROM ed
     """
     graph = {
         "type": "nodeGraph",
@@ -1862,7 +1893,28 @@ def topology() -> dict[str, Any]:
         "TCP probes.",
         "datasource": DS,
         "options": {"layoutAlgorithm": "layered", "nodes": {}, "edges": {}, "zoomMode": "cooperative"},
-        "targets": [target(nodes, TABLE, "nodes"), target(edges, TABLE, "edges")],
+        "targets": [target(graph_sql, TABLE, "graph")],
+        "transformations": [
+            # One frame per value of `frame`, named "nodes" and "edges".
+            {
+                "id": "partitionByValues",
+                "options": {"fields": ["frame"], "keepFields": False, "naming": {"asLabels": False}},
+            },
+            # Each frame keeps only the columns it uses: a nodes frame with a
+            # source column would be taken for edges.
+            {"id": "filterFields", "options": {"exclude": {"id": "byValue", "options": {"reducer": "allIsNull"}}}},
+        ],
+        # Each service of a category node is one row of its details.
+        "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+                {
+                    "matcher": {"id": "byName", "options": f"detail__{i}"},
+                    "properties": [{"id": "displayName", "value": str(i)}],
+                }
+                for i in range(1, TOPO_SERVICES + 1)
+            ],
+        },
     }
     path = series(
         "Latency by part of the path",

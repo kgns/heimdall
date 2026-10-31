@@ -25,6 +25,20 @@ RUN set -eu; \
     test -f /plugins/grafana-athena-datasource/plugin.json
 
 FROM ${GRAFANA_IMAGE}
+# Grafana docks its navigation menu on wide screens unless the browser has a
+# stored preference; nav-closed.html stores "undocked" first, ahead of the
+# page's own scripts.
+COPY nav-closed.html /tmp/nav-closed.html
+USER root
+RUN set -eu; \
+    f=/usr/share/grafana/public/views/index.html; \
+    grep -q '<script nonce="\[\[.Nonce\]\]">' "$f"; \
+    awk '!done && /<script nonce="\[\[\.Nonce\]\]">/ { while ((getline l < "/tmp/nav-closed.html") > 0) print l; done = 1 } { print }' \
+      "$f" > /tmp/index.html; \
+    cat /tmp/index.html > "$f"; \
+    rm /tmp/index.html /tmp/nav-closed.html; \
+    grep -q "grafana.navigation.docked" "$f"
+USER 472
 COPY --from=plugins --chown=472:0 /plugins/ /var/lib/grafana/plugins/
 COPY provisioning/ /etc/grafana/provisioning/
 COPY dashboards/ /etc/grafana/dashboards/

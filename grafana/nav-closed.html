@@ -1,0 +1,9 @@
+    <script nonce="[[.Nonce]]">
+      // Start with the navigation menu closed, so a dashboard gets the whole
+      // width, unless the visitor docked or undocked it before.
+      try {
+        if (window.localStorage.getItem('grafana.navigation.docked') === null) {
+          window.localStorage.setItem('grafana.navigation.docked', 'false');
+        }
+      } catch (e) {}
+    </script>
