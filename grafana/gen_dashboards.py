@@ -1991,7 +1991,9 @@ def topology() -> dict[str, Any]:
     )
     d = dashboard("heimdall-topology", "heimdall / topology", p, [LAN_DEVICE, EXT])
     d["time"] = {"from": "now-30m", "to": "now"}
-    d["refresh"] = "1m"
+    # Samples reach Athena through Firehose's 5-minute buffer, so a faster
+    # refresh only repeats the same queries.
+    d["refresh"] = "5m"
     return d
 
 
