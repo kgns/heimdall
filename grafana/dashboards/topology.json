@@ -137,133 +137,27 @@
               }
             }
           }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "detail__1": "1.",
+              "detail__2": "2.",
+              "detail__3": "3.",
+              "detail__4": "4.",
+              "detail__5": "5.",
+              "detail__6": "6.",
+              "detail__7": "7.",
+              "detail__8": "8.",
+              "detail__9": "9.",
+              "detail__10": "10."
+            },
+            "excludeByName": {},
+            "indexByName": {}
+          }
         }
       ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "detail__1"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "1"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "detail__2"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "2"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "detail__3"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "3"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "detail__4"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "4"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "detail__5"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "5"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "detail__6"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "6"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "detail__7"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "7"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "detail__8"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "8"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "detail__9"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "9"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "detail__10"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "10"
-              }
-            ]
-          }
-        ]
-      },
       "gridPos": {
         "x": 0,
         "y": 0,

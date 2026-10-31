@@ -1911,18 +1911,18 @@ def topology() -> dict[str, Any]:
                     "exclude": {"id": "byValue", "options": {"reducer": "firstNotNull", "op": "eq", "value": None}}
                 },
             },
+            # Each service of a category node is one row of its details,
+            # labelled by its rank. The node graph labels rows by the field's
+            # display name, which only a transformation sets on its frames.
+            {
+                "id": "organize",
+                "options": {
+                    "renameByName": {f"detail__{i}": f"{i}." for i in range(1, TOPO_SERVICES + 1)},
+                    "excludeByName": {},
+                    "indexByName": {},
+                },
+            },
         ],
-        # Each service of a category node is one row of its details.
-        "fieldConfig": {
-            "defaults": {},
-            "overrides": [
-                {
-                    "matcher": {"id": "byName", "options": f"detail__{i}"},
-                    "properties": [{"id": "displayName", "value": str(i)}],
-                }
-                for i in range(1, TOPO_SERVICES + 1)
-            ],
-        },
     }
     path = series(
         "Latency by part of the path",
