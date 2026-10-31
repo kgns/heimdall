@@ -389,6 +389,42 @@ aws ssm put-parameter --profile kgns --region eu-central-1 --type SecureString \
   --name /heimdall/slack/webhook_url --value 'https://hooks.slack.com/services/...'
 ```
 
+## Status pages
+
+Every Slack post links to a status page at `status.lat.kgns.dev`, written
+for the ISP and its customer rather than for the operator: what happened,
+why, who should act, the recommended fix, where on the path from the device
+to the service the fault was, and what was checked and found normal at the
+same time. The `heimdall-status` Lambda (`terraform/status.tf`) serves the
+page (plain HTML, CSS and JS in `cloud/src/heimdall_cloud/status_web/`) and
+the incident's report as JSON, read from the incidents table. An open
+incident's page refreshes every 3 s.
+
+A link names one incident, is signed with the SSM parameter
+`/heimdall/status/link_secret` and expires after 30 days. There is no login:
+whoever has a link sees that incident, including the client names in it.
+Bumping `value_wo_version` of the secret in `terraform/status.tf` rotates it
+and invalidates every link.
+
+## Live demonstration
+
+Each probe runs a second, fast detector on 5-second buckets for the home
+network only (clients' connections and the extender's backhaul). It always
+learns, but reports only while `/heimdall/demo/fast_until` is in the future;
+the ingest passes that on in its answer to every upload. Its incidents are
+confirmed at once, posted with a :zap: line and never held back as repeats.
+
+```bash
+scripts/demo on 30     # fast detection for 30 minutes; also warms up the notifier
+scripts/demo slow 40   # +40 ms on this machine, with traffic every 0.5 s (sudo)
+scripts/demo fix       # removes the delay; traffic runs 45 s more
+scripts/demo off
+```
+
+In tests the incident started about 10 s after the slowdown and reached
+Slack well under a second later with a warm notifier; it ended about 20 s
+after the fix. Grafana shows it only after Firehose's 5-minute buffer.
+
 ## Daily analysis
 
 `heimdall-analytics` (`terraform/analytics.tf`) runs at 00:30 UTC for the
