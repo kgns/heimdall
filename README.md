@@ -424,7 +424,8 @@ confirmed at once, posted with a :zap: line and never held back as repeats.
 
 ```bash
 scripts/demo on 30     # fast detection for 30 minutes; also warms up the notifier
-scripts/demo slow 40   # +40 ms on this machine, with traffic every 0.5 s (sudo)
+scripts/demo traffic   # connections every 0.5 s at normal speed, so the probes learn the baseline
+scripts/demo slow 40   # +40 ms on this machine, traffic keeps going (sudo)
 scripts/demo fix       # removes the delay; traffic runs 45 s more
 scripts/demo off
 ```

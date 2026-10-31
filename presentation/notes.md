@@ -7,6 +7,9 @@ and `slide-2.png` for Google Slides). `scripts/demo` and
 ## Before the meeting
 
 - `scripts/demo on 30`: fast detection for 30 minutes, notifier warmed up.
+- `scripts/demo traffic 15` a few minutes before the demo: connections at
+  normal speed, so the probes have this laptop's usual latency as the
+  baseline the slowdown is compared with.
 - Tabs: Slack, https://heimdall.kgns.dev (topology), the slides.
 - Rehearse once a few minutes before, so Grafana already shows an incident
   (Firehose delivers samples to Athena every 5 minutes).

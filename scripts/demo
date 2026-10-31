@@ -5,10 +5,15 @@
 #   scripts/demo on [minutes]   report with the fast detector (default 20 min)
 #   scripts/demo off            back to the regular detector only
 #   scripts/demo status         is fast detection on, and until when
+#   scripts/demo traffic [min]  open a connection every half second, at normal
+#                               speed, for min minutes (default 10), so the
+#                               probes learn this machine's usual latency
+#   scripts/demo quiet          stop that traffic now
 #   scripts/demo slow [ms]      add ms (default 40) of delay to this machine's
-#                               traffic and keep a connection going every
-#                               half second, so the probes see it (sudo)
-#   scripts/demo fix            remove the delay and stop the traffic (sudo)
+#                               traffic and keep the connections going, so the
+#                               probes see it (sudo)
+#   scripts/demo fix            remove the delay; the traffic stops 45 s later
+#                               (sudo)
 #
 # The probes learn about on/off from the ingest's answers, so a switch takes
 # up to ~20 s to reach them. The delay is on this machine's default-route
@@ -29,6 +34,20 @@ stop_traffic() {
 		rm -f "$PIDFILE"
 	fi
 }
+
+# Opens a connection every half second for $1 seconds, replacing any
+# traffic already running.
+start_traffic() {
+	local until=$(( $(date +%s) + $1 ))
+	stop_traffic
+	(while [ "$(date +%s)" -lt "$until" ]; do
+		curl -s -o /dev/null --max-time 5 https://www.google.com/generate_204 || true
+		sleep 0.5
+	done; [ "$(cat "$PIDFILE" 2>/dev/null)" = "$BASHPID" ] && rm -f "$PIDFILE") >/dev/null 2>&1 &
+	echo $! >"$PIDFILE"
+}
+
+traffic_running() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; }
 
 case "${1:-}" in
 on)
@@ -56,16 +75,27 @@ status)
 	fi
 	dev="$(iface)"
 	echo "delay on $dev: $($TC qdisc show dev "$dev" root | grep -o 'delay [^ ]*' || echo none)"
+	if traffic_running; then echo "traffic running (pid $(cat "$PIDFILE"))"; else echo "no traffic"; fi
+	;;
+traffic)
+	minutes="${2:-10}"
+	[[ "$minutes" =~ ^[0-9]+$ ]] && [ "$minutes" -ge 1 ] && [ "$minutes" -le 240 ] ||
+		{ echo "minutes must be 1-240" >&2; exit 2; }
+	start_traffic $(( minutes * 60 ))
+	echo "traffic running for $minutes min (pid $(cat "$PIDFILE")); no delay added"
+	;;
+quiet)
+	stop_traffic
+	echo "traffic stopped"
 	;;
 slow)
 	ms="${2:-40}"
 	[[ "$ms" =~ ^[0-9]+$ ]] && [ "$ms" -ge 1 ] && [ "$ms" -le 1000 ] || { echo "ms must be 1-1000" >&2; exit 2; }
 	dev="$(iface)"
 	sudo "$TC" qdisc replace dev "$dev" root netem delay "${ms}ms"
-	stop_traffic
-	(while true; do curl -s -o /dev/null --max-time 5 https://www.google.com/generate_204 || true; sleep 0.5; done) \
-		>/dev/null 2>&1 &
-	echo $! >"$PIDFILE"
+	# Traffic started with `traffic` keeps running; otherwise it runs until
+	# `fix` stops it, at most an hour.
+	traffic_running || start_traffic 3600
 	echo "added ${ms} ms on $dev; traffic running (pid $(cat "$PIDFILE"))"
 	;;
 fix)
@@ -73,11 +103,16 @@ fix)
 	sudo "$TC" qdisc del dev "$dev" root 2>/dev/null || true
 	# Keep the traffic a little longer, so the probes see the recovery
 	# rather than silence.
-	(sleep 45; kill "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; rm -f "$PIDFILE") >/dev/null 2>&1 &
-	echo "delay removed on $dev; traffic stops in 45 s"
+	if traffic_running; then
+		pid="$(cat "$PIDFILE")"
+		(sleep 45; kill "$pid" 2>/dev/null; [ "$(cat "$PIDFILE" 2>/dev/null)" = "$pid" ] && rm -f "$PIDFILE") >/dev/null 2>&1 &
+		echo "delay removed on $dev; traffic stops in 45 s"
+	else
+		echo "delay removed on $dev"
+	fi
 	;;
 *)
-	sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
 	exit 2
 	;;
 esac
