@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Print the share link of a home's weekly report, valid for 30 days:
+#   scripts/status-link [home]        (default ex7501-home)
+# The link is signed with /heimdall/status/link_secret; whoever has it sees
+# the report.
+set -euo pipefail
+site="${1:-ex7501-home}"
+[[ "$site" =~ ^[a-z0-9][a-z0-9_.-]{0,63}$ ]] || { echo "invalid home id" >&2; exit 2; }
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PROFILE="${AWS_PROFILE_HEIMDALL:-kgns}"
+REGION="${AWS_REGION_HEIMDALL:-eu-central-1}"
+secret="$(aws ssm get-parameter --profile "$PROFILE" --region "$REGION" --with-decryption \
+	--name /heimdall/status/link_secret --query Parameter.Value --output text)"
+LINK_SECRET="$secret" SITE="$site" PYTHONPATH="$ROOT/cloud/src" python3 -c '
+import os, time
+from heimdall_cloud.status import HOME, LINK_TTL_S, make_token
+token = make_token(os.environ["LINK_SECRET"].strip().encode(), os.environ["SITE"], HOME, int(time.time()) + LINK_TTL_S)
+print(f"https://status.lat.kgns.dev/h/{token}")'

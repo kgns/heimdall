@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>Your home network this week · Heimdall</title>
+  <link rel="icon" href="/assets/mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/home.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <div class="wrap bar-inner">
+      <a class="brand" href="#main" aria-label="Heimdall home report">
+        <img src="/assets/mark.svg" alt="" width="28" height="28">
+        <span>Heimdall</span>
+      </a>
+      <span class="bar-note">Your home network report</span>
+    </div>
+  </header>
+
+  <main id="main" class="wrap" tabindex="-1">
+    <section id="loading" class="state-msg" aria-live="polite">
+      <div class="spinner" aria-hidden="true"></div>
+      <p>Loading your report…</p>
+    </section>
+
+    <section id="error" class="state-msg" hidden>
+      <h1 id="error-title">This link does not work</h1>
+      <p id="error-text"></p>
+    </section>
+
+    <article id="report" hidden>
+      <section class="hero" aria-labelledby="headline">
+        <div class="hero-top"><span id="tone" class="pill"></span></div>
+        <h1 id="headline"></h1>
+        <p id="subline" class="muted"></p>
+      </section>
+
+      <section class="grid stats" aria-label="This week in numbers">
+        <div class="card stat"><span class="eyebrow">Problems inside your home</span><b id="n-home"></b></div>
+        <div class="card stat"><span class="eyebrow">Problems on your provider's side</span><b id="n-isp"></b></div>
+      </section>
+
+      <section class="card" aria-labelledby="delay-h">
+        <h2 id="delay-h" class="eyebrow">Where your delay comes from</h2>
+        <p class="muted" id="delay-total"></p>
+        <div id="budget" class="budget" aria-hidden="true"></div>
+        <ul id="budget-list" class="budget-list"></ul>
+      </section>
+
+      <section class="card" aria-labelledby="days-h">
+        <h2 id="days-h" class="eyebrow">Day by day</h2>
+        <ol id="days" class="days"></ol>
+      </section>
+
+      <section class="grid">
+        <div class="card" aria-labelledby="inc-h">
+          <h2 id="inc-h" class="eyebrow">Problems worth knowing about</h2>
+          <ul id="incidents" class="incidents"></ul>
+        </div>
+        <div class="card" aria-labelledby="dev-h">
+          <h2 id="dev-h" class="eyebrow">Your devices</h2>
+          <ul id="devices" class="devices"></ul>
+        </div>
+      </section>
+
+      <footer class="foot muted">
+        <span id="foot-site"></span>
+        <span id="foot-updated"></span>
+      </footer>
+    </article>
+  </main>
+</body>
+</html>

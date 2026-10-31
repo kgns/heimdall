@@ -38,6 +38,10 @@
         <div class="hero-top">
           <span id="status" class="pill" role="status" aria-live="polite"></span>
           <span id="mode" class="tag" hidden>Fast detection · demo</span>
+          <div class="seg-toggle" role="group" aria-label="Show this report for">
+            <button type="button" id="view-isp" aria-pressed="true">For the ISP</button>
+            <button type="button" id="view-customer" aria-pressed="false">For the customer</button>
+          </div>
         </div>
         <h1 id="headline"></h1>
         <p id="subline" class="muted"></p>
@@ -48,6 +52,7 @@
           <h2 id="owner-h" class="eyebrow">Who should act</h2>
           <p id="party" class="party"></p>
           <p id="isp-note" class="muted"></p>
+          <p id="home-link-p" hidden><a id="home-link" class="more">See your home's report for the week →</a></p>
         </div>
 
         <div class="card times" aria-labelledby="times-h">

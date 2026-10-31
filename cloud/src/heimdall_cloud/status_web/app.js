@@ -11,6 +11,8 @@
   let report = null;
   let timer = null;
   let ticker = null;
+  // Who the page speaks to: the ISP (default) or its customer.
+  let view = new URLSearchParams(location.search).get("view") === "customer" ? "customer" : "isp";
 
   const dateFmt = new Intl.DateTimeFormat("en-GB", {
     day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit",
@@ -68,10 +70,18 @@
     $("subline").textContent =
       `${SCOPE[inc.scope] || "Incident"} at home ${inc.site} · detected by ${SEEN_BY[inc.seen_by] || inc.device}`;
 
+    const customer = view === "customer";
+    $("view-isp").setAttribute("aria-pressed", String(!customer));
+    $("view-customer").setAttribute("aria-pressed", String(customer));
+    $("owner-h").textContent = customer ? "Whose side it is on" : "Who should act";
+    $("fix-h").textContent = customer ? "What you can do" : "Recommended fix";
+
     const owner = document.querySelector(".owner");
     owner.className = `card owner ${ownerClass(v.party)}`;
-    $("party").textContent = v.party_label;
-    $("isp-note").textContent = v.isp_note;
+    $("party").textContent = customer ? v.customer_label : v.party_label;
+    $("isp-note").textContent = customer ? v.customer_note : v.isp_note;
+    $("home-link-p").hidden = !customer || !r.home_link;
+    if (r.home_link) $("home-link").href = r.home_link;
 
     $("t-start").textContent = dateFmt.format(inc.started_ms);
     $("t-detect").textContent =
@@ -102,7 +112,8 @@
       }),
     );
 
-    const fixes = v.fixes.length ? v.fixes : ["No specific action yet; keep monitoring."];
+    const steps = customer ? v.customer_fixes : v.fixes;
+    const fixes = steps.length ? steps : ["No specific action yet; keep monitoring."];
     $("fixes").replaceChildren(...fixes.map((f) => el("li", null, f)));
 
     $("checks").replaceChildren(
@@ -201,6 +212,17 @@
     }
     if (!document.hidden) timer = setTimeout(load, next);
   }
+
+  function setView(next) {
+    view = next;
+    const url = new URL(location.href);
+    if (view === "customer") url.searchParams.set("view", "customer");
+    else url.searchParams.delete("view");
+    history.replaceState(null, "", url);
+    if (report) render(report);
+  }
+  $("view-isp").addEventListener("click", () => setView("isp"));
+  $("view-customer").addEventListener("click", () => setView("customer"));
 
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) load();

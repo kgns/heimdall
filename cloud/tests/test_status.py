@@ -126,3 +126,61 @@ def test_slack_posts_link_to_the_status_page(aws):
     line = next(ln for ln in posts[0][1].splitlines() if ln.startswith("Status page"))
     token = line.rsplit("/i/", 1)[1]
     assert read_token(SECRET, token, n.now()) == ("ex7501-home", "00000000000000c2")
+
+
+def test_customer_view_speaks_to_the_customer():
+    home = status.verdict({"scope": "client", "cause": "weak_signal", "services": ["aaa"]}, {})
+    assert home["customer_label"] == "You can fix this yourself" and home["customer_fixes"] == home["fixes"]
+    isp = status.verdict({"scope": "access", "cause": "access_network", "services": []}, {})
+    assert isp["customer_label"] == "Your provider is responsible"
+    assert not any("OLT" in f for f in isp["customer_fixes"])
+
+
+def _summary(s3, day, budget, flags):
+    doc = {"devices": {"ex7501-home": {
+        "attribution": {"latency_budget_ms": budget, "degraded_hours_by_cause": {"ext_hop": 2}},
+        "lan_clients": [{"client": "aaa", "node": "WX5600-AP-17479", "medium": "wifi", "flags": flags},
+                        {"client": "bbb", "node": "cpe", "medium": "wired", "flags": []}]}}}  # fmt: skip
+    s3.put_object(Bucket="raw", Key=f"derived/summary/dt={day}/summary.json", Body=json.dumps(doc).encode())
+
+
+def test_home_report(aws):
+    import boto3
+
+    table, ssm = aws
+    s3 = boto3.client("s3", region_name="eu-central-1")
+    s3.create_bucket(Bucket="raw", CreateBucketConfiguration={"LocationConstraint": "eu-central-1"})
+    now_s = 1_793_020_000  # 2026-10-26 14:26 UTC
+    _summary(s3, "2026-10-25", {"wifi": 2.0, "access": 4.0, "beyond_isp": 30.0}, ["weak_signal"])
+    _summary(s3, "2026-10-24", {"wifi": 4.0, "access": 4.0, "beyond_isp": 40.0}, [])
+    table.put_item(Item={"device": "names#ex7501-home", "incident_id": "aaa", "name": "kagan-pc"})
+
+    n = notifier(table, ssm, [])
+    n.sites = {"wx5600-ap-17479": "ex7501-home"}
+    _incident(n, "wx5600-ap-17479", incident_id="00000000000000e1", started_ms=(now_s - 3600) * 1000, mode="regular")
+    _incident(n, "ex7501-home", incident_id="00000000000000a1", scope="access", cause="access_network",
+              services=[], clients=None, targets=[], started_ms=(now_s - 7200) * 1000, mode="regular")  # fmt: skip
+    _incident(n, "wx5600-ap-17479", incident_id="00000000000000f1", started_ms=(now_s - 60) * 1000)
+
+    api = StatusAPI(table, FixedSecret(), n.sites, "aws-euc1", now=lambda: now_s, s3=s3, bucket="raw")
+    token = make_token(SECRET, "ex7501-home", "home", now_s + 60)
+    page = api(api_event(f"/h/{token}"))
+    assert page["statusCode"] == 200 and "/assets/home.js" in page["body"]
+    r = json.loads(api(api_event(f"/api/h/{token}"))["body"])
+    assert r["period"] == {"from": "2026-10-19", "to": "2026-10-25"}
+    parts = {p["id"]: p["ms"] for p in r["delay"]["parts"]}
+    assert parts == {"wifi": 3.0, "access": 4.0, "beyond_isp": 35.0} and r["delay"]["total_ms"] == 42.0
+    assert [d["slow_hours"] for d in r["days"] if d["analysed"]] == [2, 2]
+    assert r["counts"] == {"home": 1, "equipment": 0, "isp": 1, "service": 0}
+    # The demo incident is listed but not counted.
+    assert [i["demo"] for i in r["incidents"]] == [True, False, False]
+    assert r["incidents"][1]["link"].startswith("/i/") and r["incidents"][1]["link"].endswith("?view=customer")
+    devs = {d["label"]: d for d in r["devices"]}
+    assert devs["kagan-pc"]["tips"][0]["issue"] == "Weak Wi-Fi signal" and devs["Device bbb"]["ok"]
+
+    # A home link does not open an incident, nor an incident link a home.
+    assert api(api_event(f"/api/i/{token}"))["statusCode"] == 404
+    inc = make_token(SECRET, "ex7501-home", "00000000000000a1", now_s + 60)
+    assert api(api_event(f"/api/h/{inc}"))["statusCode"] == 404
+    doc = json.loads(api(api_event(f"/api/i/{inc}"))["body"])
+    assert doc["home_link"].startswith("/h/")

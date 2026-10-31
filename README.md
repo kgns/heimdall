@@ -400,7 +400,15 @@ page (plain HTML, CSS and JS in `cloud/src/heimdall_cloud/status_web/`) and
 the incident's report as JSON, read from the incidents table. An open
 incident's page refreshes every 3 s.
 
-A link names one incident, is signed with the SSM parameter
+The page has a switch between the ISP's view and the customer's: the same
+verdict, told as whose side it is on and what the customer can do
+themselves. The customer view links to the home's weekly report
+(`/h/<link>`): where the home's delay comes from (the daily analysis's
+latency budget), each day's slow hours, the incidents worth knowing about
+and whose side they were on, and the devices that stand out with a tip for
+each. `scripts/status-link [home]` prints a report link.
+
+A link names one incident or one home's report, is signed with the SSM parameter
 `/heimdall/status/link_secret` and expires after 30 days. There is no login:
 whoever has a link sees that incident, including the client names in it.
 Bumping `value_wo_version` of the secret in `terraform/status.tf` rotates it

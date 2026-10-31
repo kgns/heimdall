@@ -1,5 +1,6 @@
 # Status pages for the ISP and its customers: one page per incident, reached
-# through a signed share link that the notifier puts in its Slack posts.
+# through a signed share link that the notifier puts in its Slack posts,
+# and a weekly report per home (scripts/status-link prints its link).
 # A Lambda behind an HTTP API serves the page and the incident's report,
 # read from the incidents table, at status.<subdomain>.<zone>. The links
 # are the only access control: whoever has one sees that incident.
@@ -49,6 +50,22 @@ data "aws_iam_policy_document" "status" {
     actions   = ["ssm:GetParameter"]
     resources = [aws_ssm_parameter.link_secret.arn]
   }
+  # The daily analysis's summaries, for the home reports.
+  statement {
+    sid       = "DailySummaries"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.raw.arn}/derived/summary/*"]
+  }
+  statement {
+    sid       = "ListSummaries"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.raw.arn]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["derived/summary/*"]
+    }
+  }
   statement {
     sid       = "DecryptLinkSecret"
     actions   = ["kms:Decrypt"]
@@ -84,6 +101,7 @@ resource "aws_lambda_function" "status" {
       LINK_SECRET_PARAMETER = aws_ssm_parameter.link_secret.name
       EXTENDER_SITES        = jsonencode(local.extender_sites)
       CONTROL_DEVICE        = local.cloud_device
+      BUCKET                = aws_s3_bucket.raw.bucket
     }
   }
 
@@ -110,7 +128,7 @@ resource "aws_apigatewayv2_integration" "status" {
 }
 
 resource "aws_apigatewayv2_route" "status" {
-  for_each  = toset(["GET /i/{token}", "GET /api/i/{token}", "GET /assets/{file}"])
+  for_each  = toset(["GET /i/{token}", "GET /api/i/{token}", "GET /h/{token}", "GET /api/h/{token}", "GET /assets/{file}"])
   api_id    = aws_apigatewayv2_api.status.id
   route_key = each.value
   target    = "integrations/${aws_apigatewayv2_integration.status.id}"

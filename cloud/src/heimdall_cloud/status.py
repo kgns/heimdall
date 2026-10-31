@@ -33,7 +33,10 @@ LINK_TTL_S = 30 * 24 * 3600
 SECRET_CACHE_SECONDS = 300
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
-_INCIDENT = re.compile(r"^[0-9a-f]{8,32}$")
+# A link names one incident, or "home" for a home's weekly report.
+_INCIDENT = re.compile(r"^([0-9a-f]{8,32}|home)$")
+HOME = "home"
+REPORT_DAYS = 7
 
 
 class LinkError(Exception):
@@ -149,6 +152,7 @@ def verdict(item: dict[str, Any], detail: dict[str, Any]) -> dict[str, Any]:
             "why": why,
             "fixes": fixes,
             "isp_note": isp,
+            **customer_view(party, fixes, svc),
         }
 
     home_fix = "Restart the device's network connection and check it for heavy load, a VPN or power saving"
@@ -322,6 +326,36 @@ def verdict(item: dict[str, Any], detail: dict[str, Any]) -> dict[str, Any]:
     return v("unknown", "", f"{scope or 'An'} incident", CAUSES.get(cause, cause or "Cause not determined."), [])
 
 
+def customer_view(party: str, fixes: list[str], svc: str) -> dict[str, Any]:
+    """The same verdict as told to the customer: whose side it is on, in
+    their words, and only the advice they can follow themselves."""
+    restart = "If it keeps happening, restart your router and extender"
+    contact = "If it keeps happening, contact your provider and share this page with them"
+    views = {
+        "customer": ("You can fix this yourself", "The problem was inside your home.", fixes),
+        "equipment": (
+            "Your router or extender needs attention",
+            "The problem was in the equipment your provider gave you.",
+            ["Restart the router and the extender", "If it keeps happening, contact your provider"],
+        ),
+        "service": (
+            f"It was {svc}'s own problem",
+            "Your home and your provider were fine; the service itself was slow.",
+            ["Nothing to do on your side; it usually passes by itself"],
+        ),
+        "unknown": ("We are still looking into it", "The cause is not clear yet.", [restart]),
+    }
+    label, note, steps = views.get(
+        party,
+        (
+            "Your provider is responsible",
+            "Your home network was fine; the problem was in your provider's network.",
+            ["Nothing to do on your side", contact],
+        ),
+    )
+    return {"customer_label": label, "customer_note": note, "customer_fixes": steps}
+
+
 def _scope_segment(scope: str, cause: str) -> str:
     if scope in ("client", "home"):
         return "gateway" if cause == "lan_wide" else "wifi"
@@ -489,6 +523,170 @@ KIND_WORDS = {
 TARGET_NAMES = {"isp-hop": "ISP router", "isp-gateway": "ISP gateway", "uplink": "Home gateway"}
 
 
+# The home report: a week of one home, for the customer.
+
+# Parts of the path, as the daily analysis splits a connection's latency.
+BUDGET_PARTS = [
+    ("wifi", "Your Wi-Fi", "home"),
+    ("ext_hop", "Your extender's Wi-Fi", "home"),
+    ("backhaul", "Extender to router", "home"),
+    ("access", "Your provider's line", "isp"),
+    ("beyond_isp", "The internet beyond your provider", "internet"),
+]
+
+# Whose side a party is on, for the customer; every ISP party is "isp".
+SIDES = {"customer": "home", "equipment": "equipment", "service": "service", "unknown": "isp"}
+
+# What the daily analysis flags about a device, in the customer's words.
+DEVICE_FLAGS = {
+    "weak_signal": ("Weak Wi-Fi signal", "Move it closer to the router or extender"),
+    "weak_link": ("Low Wi-Fi speed through the extender", "Move it closer to the extender"),
+    "slow_lan": ("Slow inside the home at times", "Restart it; check for heavy downloads or a VPN"),
+    "slow_extender_hop": ("Slow link to the extender at times", "Move it closer to the extender"),
+    "slow_backhaul": ("Slowed down by the extender's link to the router", "Move the extender closer to the router"),
+    "many_retries": ("Wi-Fi interference", "Keep it away from microwaves, metal and thick walls"),
+    "roaming": ("Keeps switching between router and extender", "Usually harmless; move the extender if it bothers you"),
+}
+
+
+def _summaries(s3: Any, bucket: str, days: list[str]) -> dict[str, dict[str, Any]]:
+    out = {}
+    for d in days:
+        try:
+            obj = s3.get_object(Bucket=bucket, Key=f"derived/summary/dt={d}/summary.json")
+        except s3.exceptions.NoSuchKey:
+            continue
+        out[d] = json.loads(obj["Body"].read())
+    return out
+
+
+def _names(table: Any, site: str) -> dict[str, str]:
+    from boto3.dynamodb.conditions import Key
+
+    from heimdall_cloud.notify import names_key
+
+    resp = table.query(KeyConditionExpression=Key("device").eq(names_key(site)))
+    return {i["incident_id"]: i["name"] for i in resp.get("Items", []) if i.get("name")}
+
+
+def _recent_incidents(table: Any, device: str, since_ms: int) -> list[dict[str, Any]]:
+    from boto3.dynamodb.conditions import Attr, Key
+
+    kw: dict[str, Any] = {
+        "KeyConditionExpression": Key("device").eq(device),
+        "FilterExpression": Attr("started_ms").gte(since_ms) & Attr("confirmed").eq(True),
+    }
+    out: list[dict[str, Any]] = []
+    for _ in range(10):
+        resp = table.query(**kw)
+        out += resp.get("Items", [])
+        if "LastEvaluatedKey" not in resp:
+            break
+        kw["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    return out
+
+
+def home_report(
+    table: Any,
+    s3: Any,
+    bucket: str,
+    site: str,
+    sites: dict[str, str],
+    now_ms: int,
+    link: Callable[[str, str], str],
+) -> dict[str, Any]:
+    """A home's last REPORT_DAYS days for the customer: where its delay
+    comes from, the problems worth knowing about and who should fix them,
+    and its devices that stand out. link(device, incident_id) gives an
+    incident's page."""
+    # The daily analysis covers whole UTC days, up to yesterday.
+    day0 = now_ms // 1000 // 86400 * 86400
+    days = [time.strftime("%Y-%m-%d", time.gmtime(day0 - i * 86400)) for i in range(REPORT_DAYS, 0, -1)]
+    docs = {d: s["devices"][site] for d, s in _summaries(s3, bucket, days).items() if site in s.get("devices", {})}
+    names = _names(table, site)
+
+    def label(client: str) -> str:
+        n = names.get(client, "")
+        return n if n and not GENERIC_HOSTNAME.match(n.lower()) else f"Device {client[:4]}"
+
+    # Where the delay comes from, averaged over the days analysed.
+    parts = []
+    for key, name, side in BUDGET_PARTS:
+        vals = [b for d in docs.values() if (b := (d.get("attribution") or {}).get("latency_budget_ms", {}).get(key))]
+        if vals:
+            parts.append({"id": key, "label": name, "side": side, "ms": round(sum(vals) / len(vals), 1)})
+
+    per_day = []
+    for d in days:
+        doc = docs.get(d)
+        hours = (doc or {}).get("attribution", {}).get("degraded_hours_by_cause") or {}
+        per_day.append({"date": d, "analysed": doc is not None, "slow_hours": sum(hours.values())})
+
+    incidents = []
+    since = (day0 - REPORT_DAYS * 86400) * 1000
+    for dev in [site, *[d for d, s in sites.items() if s == site]]:
+        for item in _recent_incidents(table, dev, since):
+            detail = json.loads(item.get("detail") or "{}")
+            v = verdict(item, detail)
+            incidents.append(
+                {
+                    "started_ms": int(item.get("started_ms") or 0),
+                    "duration_s": int(item["duration_s"]) if item.get("duration_s") is not None else None,
+                    "open": item.get("status") != "closed",
+                    "headline": v["headline"],
+                    "side": SIDES.get(v["party"], "isp"),
+                    "customer_label": v["customer_label"],
+                    "demo": item.get("mode") == "fast",
+                    "link": link(dev, item["incident_id"]),
+                }
+            )
+    incidents.sort(key=lambda i: -i["started_ms"])
+    real = [i for i in incidents if not i["demo"]]
+    sides = {s: sum(1 for i in real if i["side"] == s) for s in ("home", "equipment", "isp", "service")}
+
+    latest = docs[max(docs)] if docs else {}
+    devices = []
+    for c in latest.get("lan_clients") or []:
+        tips = [
+            {"issue": DEVICE_FLAGS[f][0], "tip": DEVICE_FLAGS[f][1]} for f in c.get("flags") or [] if f in DEVICE_FLAGS
+        ]
+        devices.append(
+            {
+                "label": label(c["client"]),
+                "where": " · ".join(
+                    x
+                    for x in (
+                        "extender" if (c.get("node") or "cpe") != "cpe" else "router",
+                        "cable" if c.get("medium") == "wired" else "Wi-Fi",
+                    )
+                    if x
+                ),
+                "ok": not tips,
+                "tips": tips,
+            }
+        )
+    devices.sort(key=lambda d: d["ok"])
+
+    if not real:
+        headline, tone = "Your connection was healthy this week", "good"
+    elif sides["home"] + sides["equipment"] >= sides["isp"] + sides["service"]:
+        headline, tone = "Most problems this week started inside your home", "home"
+    else:
+        headline, tone = "Most problems this week were on your provider's side", "isp"
+    return {
+        "site": site,
+        "period": {"from": days[0], "to": days[-1]},
+        "headline": headline,
+        "tone": tone,
+        "counts": sides,
+        "delay": {"parts": parts, "total_ms": round(sum(p["ms"] for p in parts), 1)},
+        "days": per_day,
+        "incidents": incidents[:30],
+        "devices": devices[:12],
+        "updated_ms": now_ms,
+    }
+
+
 def incident_detail(x: dict[str, Any], control: list[str] | None, extender: bool) -> dict[str, Any]:
     """What the status page needs from an incident event beyond the
     incidents table's fields: the worst measurements, the clients and the
@@ -591,8 +789,15 @@ class StatusAPI:
         sites: dict[str, str],
         control_device: str,
         now: Callable[[], float] = time.time,
+        s3: Any = None,
+        bucket: str = "",
     ):
         self.table, self.secret, self.sites, self.control, self.now = table, secret, sites, control_device, now
+        self.s3, self.bucket = s3, bucket
+
+    def link(self, prefix: str, device: str, name: str, view: str = "") -> str:
+        token = make_token(self.secret.value(), device, name, int(self.now()) + LINK_TTL_S)
+        return f"/{prefix}/{token}" + (f"?view={view}" if view else "")
 
     def __call__(self, event: dict[str, Any], context: Any = None) -> dict[str, Any]:
         method = (event.get("requestContext") or {}).get("http", {}).get("method", "GET")
@@ -601,10 +806,14 @@ class StatusAPI:
             return _resp(405, "method not allowed", "text/plain")
         if path.startswith("/i/"):
             return _static("index.html")
+        if path.startswith("/h/"):
+            return _static("home.html")
         if path.startswith("/assets/") and re.fullmatch(r"/assets/[a-z0-9-]+\.(js|css|svg)", path):
             return _static(path.removeprefix("/assets/"))
         if path.startswith("/api/i/"):
             return self.api(path.removeprefix("/api/i/"))
+        if path.startswith("/api/h/"):
+            return self.home_api(path.removeprefix("/api/h/"))
         if path in ("/", "/favicon.ico"):
             return _resp(404, "Heimdall status pages are reached through a share link.", "text/plain")
         return _resp(404, "not found", "text/plain")
@@ -614,9 +823,30 @@ class StatusAPI:
             device, incident_id = read_token(self.secret.value(), token, self.now())
         except LinkError as e:
             return _json(e.status, {"error": str(e)})
+        if incident_id == HOME:
+            return _json(404, {"error": "unknown link"})
         doc = report(self.table, device, incident_id, self.sites, self.control, int(self.now() * 1000))
         if doc is None:
             return _json(404, {"error": "this incident is no longer available"})
+        doc["home_link"] = self.link("h", doc["incident"]["site"], HOME)
+        return _json(200, doc)
+
+    def home_api(self, token: str) -> dict[str, Any]:
+        try:
+            site, name = read_token(self.secret.value(), token, self.now())
+        except LinkError as e:
+            return _json(e.status, {"error": str(e)})
+        if name != HOME or self.s3 is None:
+            return _json(404, {"error": "unknown link"})
+        doc = home_report(
+            self.table,
+            self.s3,
+            self.bucket,
+            site,
+            self.sites,
+            int(self.now() * 1000),
+            lambda dev, iid: self.link("i", dev, iid, "customer"),
+        )
         return _json(200, doc)
 
 
@@ -633,6 +863,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             secret=Secret(boto3.client("ssm"), os.environ["LINK_SECRET_PARAMETER"]),
             sites=json.loads(os.environ.get("EXTENDER_SITES", "{}")),
             control_device=os.environ.get("CONTROL_DEVICE", ""),
+            s3=boto3.client("s3"),
+            bucket=os.environ.get("BUCKET", ""),
         )
     try:
         return _api(event, context)

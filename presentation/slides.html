@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Heimdall · 3-minute presentation</title>
+<style>
+  :root {
+    --bg: #f6f7fb; --card: #fff; --ink: #111827; --muted: #5b6474; --line: #e5e7ef;
+    --brand: #4f46e5; --brand-bg: #eef0ff; --bad: #dc2626; --bad-bg: #fef2f2;
+    --warn: #b45309; --warn-bg: #fffbeb; --ok: #15803d;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #d9dce4; }
+  body { font: 18px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: var(--ink); }
+  .slide {
+    width: 1280px; height: 720px; margin: 24px auto; padding: 44px 56px; background: var(--bg);
+    position: relative; overflow: hidden; break-after: page;
+  }
+  @media print { html, body { background: var(--bg); } .slide { margin: 0; } @page { size: 1280px 720px; margin: 0; } }
+  .top { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 15px; }
+  .top img { width: 32px; height: 32px; }
+  .top b { color: var(--ink); font-size: 19px; }
+  h1 { margin: 18px 0 8px; font-size: 40px; line-height: 1.15; letter-spacing: -0.01em; }
+  .lead { margin: 0 0 26px; color: var(--muted); font-size: 19px; max-width: 1080px; }
+
+  .path { display: flex; align-items: stretch; gap: 0; margin-bottom: 8px; }
+  .seg { flex: 1; text-align: center; padding: 14px 8px; border-radius: 14px; border: 1.5px solid var(--line); background: var(--card); }
+  .seg b { display: block; font-size: 19px; }
+  .seg span { color: var(--muted); font-size: 15px; font-variant-numeric: tabular-nums; }
+  .seg.home { background: var(--warn-bg); border-color: var(--warn); }
+  .seg.probe { background: var(--brand-bg); border-color: var(--brand); }
+  .seg.isp { background: var(--bad-bg); border-color: var(--bad); }
+  .arrow { align-self: center; width: 26px; text-align: center; color: var(--muted); font-size: 20px; }
+  .caption { color: var(--muted); font-size: 14px; margin: 0 0 24px; }
+  .caption b { color: var(--brand); }
+
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px; box-shadow: 0 1px 2px rgb(16 24 40 / 6%), 0 4px 16px rgb(16 24 40 / 6%); }
+  .steps h2 { margin: 0 0 8px; font-size: 21px; color: var(--brand); }
+  .steps p { margin: 0; font-size: 16px; }
+  .foot { position: absolute; left: 56px; right: 56px; bottom: 28px; font-size: 14px; color: var(--muted); }
+  .foot b { color: var(--ink); }
+
+  .demo { display: grid; grid-template-columns: 470px 1fr; gap: 36px; }
+  .demo ol { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 20px; }
+  .demo li { display: grid; grid-template-columns: 40px 1fr; gap: 4px 14px; }
+  .num { grid-row: span 2; width: 38px; height: 38px; border-radius: 50%; background: var(--brand); color: #fff; display: grid; place-items: center; font-weight: 700; }
+  .demo li b { font-size: 21px; }
+  .demo li b code { margin-left: 8px; font: 600 14px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--brand); background: var(--brand-bg); padding: 2px 6px; border-radius: 6px; }
+  .demo li span { color: var(--muted); font-size: 16px; }
+  .demo li .num { color: #fff; font-size: 18px; }
+  .shots { position: relative; }
+  .shots .desk { width: 640px; border-radius: 12px; border: 1px solid var(--line); box-shadow: 0 10px 30px rgb(16 24 40 / 18%); }
+  .shots .phone { position: absolute; right: -8px; top: 150px; width: 190px; border-radius: 22px; border: 5px solid var(--ink); box-shadow: 0 12px 30px rgb(16 24 40 / 28%); }
+  .shots .labels { margin-top: 14px; font-size: 15px; width: 420px; }
+  .shots .labels b { color: var(--ink); }
+  .shots .labels div { color: var(--muted); }
+</style>
+</head>
+<body>
+
+<section class="slide">
+  <div class="top"><img src="../cloud/src/heimdall_cloud/status_web/mark.svg" alt=""><b>Heimdall</b> latency health check for ISPs and their customers</div>
+  <h1>When the internet feels slow, who should fix it?</h1>
+  <p class="lead">A small probe on the home gateway and the Wi-Fi extender measures every part of the path,
+    and tells within seconds where the delay is and who should act.</p>
+
+  <div class="path" aria-label="The path from a device to the internet">
+    <div class="seg"><b>Device</b><span>your laptop</span></div><div class="arrow">→</div>
+    <div class="seg home"><b>Wi-Fi</b><span>2.2 ms</span></div><div class="arrow">→</div>
+    <div class="seg home"><b>Extender</b><span>1.1 + 1.0 ms</span></div><div class="arrow">→</div>
+    <div class="seg probe"><b>Gateway</b><span>probe</span></div><div class="arrow">→</div>
+    <div class="seg isp"><b>ISP line</b><span>3.8 ms</span></div><div class="arrow">→</div>
+    <div class="seg"><b>Internet</b><span>36.9 ms</span></div>
+  </div>
+  <p class="caption"><b>Probes on the gateway and the extender</b> · typical latency of each part on 30 Oct, from the daily analysis</p>
+
+  <div class="steps">
+    <div class="card"><h2>1 · Measure</h2><p>Every client connection's Wi-Fi and internet round trips, the extender link,
+      the ISP's hops, 37 services, and the same services from AWS for comparison.</p></div>
+    <div class="card"><h2>2 · Detect</h2><p>Baselines per device and service. A slowdown becomes an incident with a likely
+      cause: weak Wi-Fi, the extender, the ISP's line, its route to a service, DNS, or the service itself.</p></div>
+    <div class="card"><h2>3 · Tell</h2><p>A Slack alert, and a status page for the ISP and for the customer: what happened,
+      why, who should act and the fix. Grafana for us, a weekly report for the home.</p></div>
+  </div>
+
+  <p class="foot"><b>No hostnames or server addresses are stored</b> · 8 MB static binary on a Zyxel EX7501 gateway and a
+    WX5600 extender · AWS: Lambda, Firehose, Athena, DynamoDB, Grafana</p>
+</section>
+
+<section class="slide">
+  <div class="top"><img src="../cloud/src/heimdall_cloud/status_web/mark.svg" alt=""><b>Heimdall</b> live demo</div>
+  <h1>Slow down my laptop, and watch it get caught</h1>
+  <div class="demo">
+    <ol>
+      <li><span class="num">1</span><b>Slow it down<code>demo slow 40</code></b>
+        <span>Adds 40 ms to my laptop's traffic. It is on the extender's Wi-Fi.</span></li>
+      <li><span class="num">2</span><b>Caught in ~10 s<code>Slack</code></b>
+        <span>The extender's probe sees kagan-pc's hop jump from 1 ms to 41 ms.</span></li>
+      <li><span class="num">3</span><b>Who should act<code>status page</code></b>
+        <span>The customer's home network, not the ISP: the ISP's line, its route and the services were normal.</span></li>
+      <li><span class="num">4</span><b>Fix it<code>demo fix</code></b>
+        <span>Resolved about 20 s later, with the real duration.</span></li>
+    </ol>
+    <div class="shots">
+      <img class="desk" src="incident-isp.png" alt="Incident page for the ISP">
+      <img class="phone" src="home-report.png" alt="Weekly home report on a phone">
+      <div class="labels">
+        <div><b>For the ISP:</b> the cause, who should act, the fix</div>
+        <div><b>For the customer:</b> the same in their words, and a weekly report of their home</div>
+      </div>
+    </div>
+  </div>
+  <p class="foot">Demo mode runs a second detector on 5-second buckets. The regular one waits 10 minutes before it alerts.</p>
+</section>
+
+</body>
+</html>
