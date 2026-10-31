@@ -567,8 +567,9 @@ def client_services(athena: Athena, day: date) -> list[dict[str, Any]]:
 
 def client_crosscheck(athena: Athena, day: date) -> list[dict[str, Any]]:
     """Connections a client device (heimdall-client) opened, matched with
-    the CPE's record of the same connections by client address, port and
-    server: what the client measured next to the CPE's WAN and LAN parts."""
+    the CPE's record of the same connections by the client's address and
+    port within a few seconds (a source port is not reused that soon): what
+    the client measured next to the CPE's WAN and LAN parts."""
     rows = athena.query(f"""
         WITH c AS (
           SELECT device AS client_device, ts_ms, service, dst_ip, rtt_ms AS client_ms,
@@ -593,7 +594,7 @@ def client_crosscheck(athena: Athena, day: date) -> list[dict[str, Any]]:
           approx_percentile(f.lan, 0.5) AS cpe_lan_p50,
           approx_percentile(c.client_ms - f.wan - f.lan, 0.5) AS gap_p50,
           approx_percentile(c.client_ms - f.wan - f.lan, 0.9) AS gap_p90
-        FROM c JOIN f ON c.ip = f.ip AND c.port = f.port AND c.dst_ip = f.dst_ip AND abs(c.ts_ms - f.ts_ms) < 5000
+        FROM c JOIN f ON c.ip = f.ip AND c.port = f.port AND abs(c.ts_ms - f.ts_ms) < 5000
         GROUP BY f.device, c.client_device, c.service
     """)  # noqa: S608 - only dates, constants and validated device IDs are interpolated
     return [

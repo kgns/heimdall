@@ -1292,10 +1292,11 @@ CLIENT_DEVICE = var(
     "client device",
 )
 # The client device's own TCP connects, matched with the CPE's record of
-# the same connection by client address, port and server.
+# the same connection by the client's address and port within a few
+# seconds.
 MATCHED = """
 WITH c AS (
-  SELECT ts_ms, service, dst_ip, rtt_ms AS client_ms,
+  SELECT ts_ms, service, rtt_ms AS client_ms,
     json_extract_scalar(extra, '$.local_ip') AS ip,
     CAST(json_extract_scalar(extra, '$.local_port') AS integer) AS port
   FROM heimdall.samples
@@ -1303,7 +1304,7 @@ WITH c AS (
     AND target_id <> 'client/gateway-tcp'
 ),
 f AS (
-  SELECT ts_ms, dst_ip,
+  SELECT ts_ms,
     json_extract_scalar(extra, '$.client_ip') AS ip,
     CAST(json_extract_scalar(extra, '$.client_port') AS integer) AS port,
     CAST(json_extract_scalar(extra, '$.wan_ms') AS double) AS wan,
@@ -1313,7 +1314,7 @@ f AS (
 ),
 m AS (
   SELECT c.ts_ms, c.service, c.client_ms, f.wan, f.lan
-  FROM c JOIN f ON c.ip = f.ip AND c.port = f.port AND c.dst_ip = f.dst_ip AND abs(c.ts_ms - f.ts_ms) < 5000
+  FROM c JOIN f ON c.ip = f.ip AND c.port = f.port AND abs(c.ts_ms - f.ts_ms) < 5000
 )
 """
 

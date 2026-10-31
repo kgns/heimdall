@@ -14,6 +14,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/kgns/heimdall/probe/internal/collectors/flows"
 	"github.com/kgns/heimdall/probe/internal/config"
 	"github.com/kgns/heimdall/probe/internal/netwatch"
 	"github.com/kgns/heimdall/probe/internal/probes/icmp"
@@ -314,6 +315,27 @@ func TestBridgeClientContext(t *testing.T) {
 		cx := c.clientContext(id)
 		if cx["node"] != want[0] || cx["port"] != want[1] || cx["medium"] != want[2] {
 			t.Errorf("%s: %v", id, cx)
+		}
+	}
+}
+
+// Below raw, a flow sample keeps the client's own address and port, which
+// identify the connection, but not where it went.
+func TestFlowSampleNames(t *testing.T) {
+	c, _ := collectorEnv(t, collectorFixture(t), nil)
+	mac, _ := net.ParseMAC("f0:87:56:8c:f7:a7")
+	f := flows.Flow{Proto: "tcp", Client: netip.MustParseAddrPort("192.168.1.95:51234"),
+		Server: netip.MustParseAddrPort("140.82.121.4:443"), ClientMAC: mac, Start: time.Now(),
+		Name: "github.com", NameSource: flows.NameSNI, Status: flows.StatusOK}
+	for _, names := range []string{config.FlowNamesService, config.FlowNamesCategory, config.FlowNamesRaw} {
+		fs := &flowSampler{coll: c, cfg: config.Flows{Names: names}, now: time.Now}
+		s := fs.sample(f)
+		if s.Extra["client_ip"] != "192.168.1.95" || s.Extra["client_port"] != 51234 {
+			t.Errorf("%s: client %v:%v", names, s.Extra["client_ip"], s.Extra["client_port"])
+		}
+		raw := names == config.FlowNamesRaw
+		if (s.DstIP != "") != raw || (s.Extra["name"] != nil) != raw || (s.DstPort != 0) != raw {
+			t.Errorf("%s: dst %q:%d name %v", names, s.DstIP, s.DstPort, s.Extra["name"])
 		}
 	}
 }

@@ -200,9 +200,12 @@ func (fs *flowSampler) sample(f flows.Flow) sample.Sample {
 	if fs.cfg.Names == config.FlowNamesCategory {
 		s.Service = ""
 	}
+	// The client's own LAN address and port identify the connection, so that
+	// a client device's record of it can be matched; they tell nothing about
+	// where it went.
+	x["client_ip"], x["client_port"] = f.Client.Addr().String(), int(f.Client.Port())
 	if fs.cfg.Names == config.FlowNamesRaw {
 		s.DstIP, s.DstPort = f.Server.Addr().String(), int(f.Server.Port())
-		x["client_ip"], x["client_port"] = f.Client.Addr().String(), int(f.Client.Port())
 		if f.Name != "" {
 			x["name"] = f.Name
 		}

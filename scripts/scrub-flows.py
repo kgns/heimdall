@@ -1,13 +1,13 @@
 """Removes server hostnames and addresses from the stored flow samples.
 
 Probes that recorded flows with ``collectors.flows.names: raw`` stored, for
-every connection a LAN client opened, the server's name (``extra.name``),
-its address and port (``dst_ip``, ``dst_port``) and the client's own
-address and port (``extra.client_ip``, ``extra.client_port``). This script
-finds the Parquet files that hold such rows (through Athena's ``$path``),
-rewrites each one without those fields and uploads it under the same key.
-The raw bucket is not versioned, so the old content is gone afterwards.
-Every other row and field stays as it was.
+every connection a LAN client opened, the server's name (``extra.name``)
+and its address and port (``dst_ip``, ``dst_port``). This script finds the
+Parquet files that hold such rows (through Athena's ``$path``), rewrites
+each one without those fields and uploads it under the same key. The raw
+bucket is not versioned, so the old content is gone afterwards. Every other
+row and field stays as it was, including the client's own LAN address and
+port, which identify the connection but not where it went.
 
 With --src-ip it also blanks ``src_ip``, the public address each batch
 came from, in every row of every file of the devices given.
@@ -33,7 +33,7 @@ import pyarrow.parquet as pq
 
 BUCKET = "heimdall-raw-359519776451"
 WORKGROUP = "heimdall"
-EXTRA_KEYS = ("name", "client_ip", "client_port")
+EXTRA_KEYS = ("name",)
 DEVICE_OK = set("abcdefghijklmnopqrstuvwxyz0123456789-_.")
 
 

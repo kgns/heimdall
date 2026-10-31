@@ -117,9 +117,9 @@ type Flows struct {
 	Interface string `yaml:"interface"`
 	// Names selects how much of the destination is reported: "category"
 	// (streaming, gaming, ...), "service" (the catalog service, such as
-	// netflix) or "raw", which adds the server name, its address and the
-	// client's address and port. raw is for prototypes on one's own
-	// network only.
+	// netflix) or "raw", which adds the server name and address. raw is for
+	// prototypes on one's own network only. Every level reports the client's
+	// own LAN address and port.
 	Names string `yaml:"names"`
 	// MaxPerMinute caps the flow samples; the rest are counted only.
 	MaxPerMinute int `yaml:"max_per_minute"`
