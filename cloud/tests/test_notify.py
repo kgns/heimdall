@@ -1,9 +1,5 @@
 import os
 
-import boto3
-import pytest
-from moto import mock_aws
-
 from heimdall_cloud.notify import Notifier, Webhook, client_label, format_message, incident_events
 
 os.environ.setdefault("AWS_DEFAULT_REGION", "eu-central-1")
@@ -14,25 +10,6 @@ def ev(event, incident_id="i1", device_ts=1_793_020_000_000, **extra):
     x = {"event": event, "incident_id": incident_id, "scope": "service", "cause": "path", "services": ["netflix"]}
     x.update(extra)
     return {"kind": "event", "ts_ms": device_ts, "extra": x}
-
-
-@pytest.fixture
-def aws():
-    with mock_aws():
-        ddb = boto3.resource("dynamodb", region_name="eu-central-1")
-        table = ddb.create_table(
-            TableName="heimdall-incidents",
-            KeySchema=[
-                {"AttributeName": "device", "KeyType": "HASH"},
-                {"AttributeName": "incident_id", "KeyType": "RANGE"},
-            ],
-            AttributeDefinitions=[
-                {"AttributeName": "device", "AttributeType": "S"},
-                {"AttributeName": "incident_id", "AttributeType": "S"},
-            ],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        yield table, boto3.client("ssm", region_name="eu-central-1")
 
 
 def notifier(table, ssm, posts):

@@ -195,6 +195,7 @@ def format_message(
     grafana: str,
     note: str | None = None,
     extender: bool = False,
+    status_link: str = "",
 ) -> str:
     """The Slack text of an incident event. device is the label to show;
     extender is set for a probe on a mesh extender, whose client figures
@@ -206,10 +207,11 @@ def format_message(
     services = ", ".join(labels.get(s, s) for s in x.get("services") or []) or "-"
     cause = CAUSES.get(x.get("cause", ""), x.get("cause", "unknown"))
     if name == "incident_end":
-        return (
+        text = (
             f":large_green_circle: *{device}* resolved after {_fmt_duration(int(x.get('duration_s', 0)))}: "
             f"{x.get('scope')} incident - {services}" + (" :zap:" if x.get("mode") == "fast" else "")
         )
+        return f"{text}\nStatus page: {status_link}" if status_link else text
     icon = ":no_entry:" if x.get("cause") == "tls_blocked" else ":red_circle:"
     verb = "incident" if name in ("incident_start", "incident_confirmed") else "incident update"
     head = f"{icon} *{device}* {verb}: {x.get('scope')} - {services}"
@@ -241,6 +243,8 @@ def format_message(
         lines.append(note)
     if x.get("mode") == "fast":
         lines.append(":zap: Fast detection (demo mode, 5-second buckets)")
+    if status_link:
+        lines.append(f"Status page for the ISP and the customer: {status_link}")
     if grafana:
         lines.append(f"{grafana}d/{'heimdall-topology' if home else 'heimdall-overview'}")
     return "\n".join(lines)
@@ -258,7 +262,10 @@ class Notifier:
         device_asn: dict[str, int] | None = None,
         access_note: Callable[[int, int], str] = ioda_note,
         extender_sites: dict[str, str] | None = None,
+        status_url: str = "",
+        link_secret: Any = None,
     ):
+        self.status_url, self.link_secret = status_url, link_secret
         self.table, self.webhook, self.control = table, webhook, control_device
         self.grafana, self.post, self.now = grafana_url, post, now
         self.device_asn, self.access_note = device_asn or {}, access_note
@@ -326,6 +333,37 @@ class Notifier:
         )
         return any(i.get("incident_id") != x.get("incident_id") for i in resp.get("Items", []))
 
+    def save_detail(self, device: str, x: dict[str, Any], control: list[str] | None) -> None:
+        """Keep what the status page shows beyond the incident's fields:
+        the worst measurements, the clients and the reference probe's
+        view, as of the latest event."""
+        from heimdall_cloud.status import incident_detail
+
+        detail = incident_detail(x, control, extender=device in self.sites)
+        try:
+            self.table.update_item(
+                Key={"device": device, "incident_id": x["incident_id"]},
+                UpdateExpression="SET detail = :d",
+                ExpressionAttributeValues={":d": json.dumps(detail, default=str)},
+            )
+        except Exception as e:  # the page's details never stop a notification
+            log.warning("saving incident detail failed: %s", e)
+
+    def status_link(self, device: str, incident_id: str) -> str:
+        """The share link of an incident's status page, or "" when status
+        pages are not configured."""
+        if not self.status_url or self.link_secret is None or not incident_id:
+            return ""
+        from heimdall_cloud.status import LINK_TTL_S, make_token
+
+        try:
+            secret = self.link_secret.value()
+        except Exception as e:
+            log.warning("link secret unreadable: %s", e)
+            return ""
+        token = make_token(secret, device, incident_id, int(self.now()) + LINK_TTL_S)
+        return f"{self.status_url}i/{token}"
+
     def mark_posted(self, device: str, incident_id: str) -> None:
         self.table.update_item(
             Key={"device": device, "incident_id": incident_id},
@@ -367,6 +405,7 @@ class Notifier:
                     "mode": x.get("mode") or "regular",
                     "confirmed": x.get("confirmed", True),
                     "started_ms": int(x.get("started_ms") or ev.get("ts_ms") or 0),
+                    "detected_ms": int(x.get("detected_ms") or ev.get("ts_ms") or 0),
                     "ttl": ttl,
                 }
             )
@@ -420,6 +459,10 @@ class Notifier:
             note = None
             if x["event"] != "incident_end" and x.get("scope") == "service":
                 control = sorted(self.open_services(self.control) & set(x.get("services") or []))
+            if x["event"] != "incident_end":
+                if x.get("scope") in HOME_SCOPES:
+                    self.add_names(device, x)
+                self.save_detail(device, x, control)
             url = self.webhook.url()
             if (
                 url
@@ -442,10 +485,16 @@ class Notifier:
             )
             if not post:
                 continue
-            if x.get("scope") in HOME_SCOPES:
+            if x["event"] == "incident_end" and x.get("scope") in HOME_SCOPES:
                 self.add_names(device, x)
             text = format_message(
-                device_label(device, self.sites), ev, control, self.grafana, note, extender=device in self.sites
+                device_label(device, self.sites),
+                ev,
+                control,
+                self.grafana,
+                note,
+                extender=device in self.sites,
+                status_link=self.status_link(device, x.get("incident_id", "")),
             )
             try:
                 self.post(url, text)
@@ -473,4 +522,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             device_asn=json.loads(os.environ.get("DEVICE_ASN", "{}")),
             extender_sites=json.loads(os.environ.get("EXTENDER_SITES", "{}")),
         )
+        if (url := os.environ.get("STATUS_URL")) and (param := os.environ.get("LINK_SECRET_PARAMETER")):
+            from heimdall_cloud.status import Secret
+
+            _notifier.status_url = url
+            _notifier.link_secret = Secret(_notifier.webhook.ssm, param)
     return _notifier(event, context)

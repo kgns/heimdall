@@ -58,9 +58,12 @@ data "aws_iam_policy_document" "notifier" {
     resources = [aws_dynamodb_table.incidents.arn]
   }
   statement {
-    sid       = "Webhook"
-    actions   = ["ssm:GetParameter"]
-    resources = ["arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter${local.slack_webhook_parameter}"]
+    sid     = "Secrets"
+    actions = ["ssm:GetParameter"]
+    resources = [
+      "arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter${local.slack_webhook_parameter}",
+      aws_ssm_parameter.link_secret.arn,
+    ]
   }
   statement {
     sid       = "DecryptWebhook"
@@ -91,7 +94,7 @@ resource "aws_lambda_function" "notifier" {
   # More memory brings more CPU: a cold start at 128 MB took about 7 s
   # before the first Slack post.
   memory_size = 512
-  timeout          = 30
+  timeout     = 30
 
   environment {
     variables = {
@@ -101,6 +104,9 @@ resource "aws_lambda_function" "notifier" {
       GRAFANA_URL       = "https://${local.grafana_domain}/"
       DEVICE_ASN        = jsonencode({ for d, a in local.home_asn : d => a if d != local.cloud_device })
       EXTENDER_SITES    = jsonencode(local.extender_sites)
+      # Status page links in the posts.
+      STATUS_URL            = local.status_url
+      LINK_SECRET_PARAMETER = aws_ssm_parameter.link_secret.name
     }
   }
 
