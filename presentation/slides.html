@@ -55,6 +55,28 @@
   .shots .labels { margin-top: 14px; font-size: 15px; width: 420px; }
   .shots .labels b { color: var(--ink); }
   .shots .labels div { color: var(--muted); }
+
+  .views { display: flex; align-items: stretch; margin: 0 0 20px; }
+  .views .seg { padding: 8px; }
+  .views .seg b { font-size: 18px; display: inline; margin-right: 8px; }
+  .views .seg span { font-size: 14px; }
+  .checks { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .checks h2 { margin: 0 0 2px; font-size: 21px; color: var(--brand); }
+  .checks .q { margin: 0 0 8px; color: var(--muted); font-size: 15px; }
+  .big { font-size: 28px; font-weight: 700; letter-spacing: -0.01em; }
+  .big small { font-size: 16px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 15px; font-variant-numeric: tabular-nums; }
+  th { text-align: right; font-weight: 600; color: var(--muted); font-size: 13px; padding: 0 0 4px 14px; }
+  th, td { white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; padding-left: 0; }
+  td { text-align: right; padding: 3px 0 3px 14px; border-top: 1px solid var(--line); }
+  td.gap { color: var(--ok); font-weight: 600; }
+  .split { display: flex; height: 40px; border-radius: 10px; overflow: hidden; margin: 14px 0 8px; font-size: 15px; font-weight: 600; }
+  .split div { display: grid; place-items: center; color: #fff; }
+  .split .isp { background: var(--bad); }
+  .split .svc { background: var(--muted); }
+  .legend { display: flex; justify-content: space-between; font-size: 14px; color: var(--muted); }
+  .note { margin: 8px 0 0; font-size: 14px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -112,6 +134,50 @@
     </div>
   </div>
   <p class="foot">Demo mode runs a second detector on 5-second buckets. The regular one waits 10 minutes before it alerts.</p>
+</section>
+
+<section class="slide">
+  <div class="top"><img src="../cloud/src/heimdall_cloud/status_web/mark.svg" alt=""><b>Heimdall</b> can we trust it?</div>
+  <h1>We don't just measure, we cross-check</h1>
+  <p class="lead">The gateway's numbers, checked against what a device measures and against the same services seen from the cloud.</p>
+
+  <div class="views" aria-label="Three points of view">
+    <div class="seg"><b>Device</b><span>heimdall-client on a laptop</span></div><div class="arrow">→</div>
+    <div class="seg probe"><b>Gateway</b><span>the probe: where on the path</span></div><div class="arrow">→</div>
+    <div class="seg"><b>Cloud</b><span>the same probe in AWS Frankfurt</span></div>
+  </div>
+
+  <div class="checks">
+    <div class="card">
+      <h2>Device ↔ gateway</h2>
+      <p class="q">Does the gateway see what the device experiences?</p>
+      <div class="big">within ~3 ms <small>on 42,831 matched connections</small></div>
+      <table aria-label="Laptop measurement against the gateway's split, medians">
+        <thead><tr><th>Service</th><th>Laptop</th><th>Gateway: internet + home</th><th>Gap</th></tr></thead>
+        <tbody>
+          <tr><td>Google</td><td>22.6 ms</td><td>15.4 + 3.5 ms</td><td class="gap">3.3 ms</td></tr>
+          <tr><td>GitHub</td><td>51.1 ms</td><td>43.9 + 3.3 ms</td><td class="gap">3.2 ms</td></tr>
+          <tr><td>AWS Frankfurt</td><td>55.2 ms</td><td>48.4 + 3.3 ms</td><td class="gap">3.2 ms</td></tr>
+          <tr><td>YouTube</td><td>27.1 ms</td><td>17.5 + 3.6 ms</td><td class="gap">3.4 ms</td></tr>
+        </tbody>
+      </table>
+      <p class="note">The steady gap is the laptop itself. Nothing to install on customers' devices.</p>
+    </div>
+    <div class="card">
+      <h2>Gateway ↔ cloud</h2>
+      <p class="q">Is a slow service the ISP's fault or the service's?</p>
+      <div class="big">1,296 <small>degraded service-hours over 6 days</small></div>
+      <div class="split" role="img" aria-label="70% ISP side, 30% service side">
+        <div class="isp" style="width: 70%">ISP side · 902 h · 70%</div>
+        <div class="svc" style="width: 30%">30%</div>
+      </div>
+      <div class="legend"><span>slower only from the home: the ISP's line or route</span><span>slower from AWS too: the service</span></div>
+      <p class="note">Most ISP-side: Microsoft 365, TRT Tabii, Gain, Exxen, Disney+. Each incident's status page shows
+        the same comparison.</p>
+    </div>
+  </div>
+
+  <p class="foot">Matched by the client's address and port within 5 s · 27, 28, 31 Oct · each side is judged against its own normal</p>
 </section>
 
 </body>

@@ -1,7 +1,7 @@
 # Heimdall: 3-minute talk
 
 Slides: `slides.html` (open in a browser, or `heimdall.pdf`; `slide-1.png`
-and `slide-2.png` for Google Slides). `scripts/demo` and
+to `slide-3.png` for Google Slides). `scripts/demo` and
 `scripts/status-link` are in the repository root.
 
 ## Before the meeting
@@ -44,5 +44,23 @@ what to do.
    home's weekly report.
 4. `scripts/demo fix`: the page turns to Resolved by itself and Slack posts
    the end about 20 seconds later.
+
+## Slide 3: can we trust it? (about 30 s, or for questions)
+
+The numbers are cross-checked from three places.
+
+- Device and gateway: `heimdall-client` on a laptop opened the same
+  connections, and the gateway's split explains what the laptop measured to
+  within about 3 ms on 42,831 matched connections. The steady 3 ms is the
+  laptop's own stack. So the gateway can speak for the home's devices without
+  installing anything on them.
+- Gateway and cloud: the same probe in AWS Frankfurt measures the same
+  services. Of 1,296 degraded service-hours in 6 days, 70% were slower only
+  from the home (the ISP's line or route) and 30% from AWS too (the service).
+  Each side is judged against its own normal, since Frankfurt is far from
+  services hosted only in Turkey; it may also get another CDN server than the
+  home, so agreement is strong evidence, disagreement on a CDN service weaker.
+
+If time is short, skip it and keep it for questions.
 
 After the meeting: `scripts/demo off`.
