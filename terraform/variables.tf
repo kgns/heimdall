@@ -35,9 +35,9 @@ variable "custom_domain" {
 variable "devices" {
   description = "Device IDs that may upload. Each needs a token digest in SSM; see scripts/new-device-token."
   type        = list(string)
-  # mbp-kgns runs heimdall-client for comparisons with ex7501-home.
-  # wx5600-ap-17479 is the mesh extender of ex7501-home.
-  default = ["ex7501-home", "aws-euc1", "mbp-kgns", "wx5600-ap-17479"]
+  # mbp-kgns and kagan-pc run heimdall-client for comparisons with
+  # ex7501-home. wx5600-ap-17479 is the mesh extender of ex7501-home.
+  default = ["ex7501-home", "aws-euc1", "mbp-kgns", "wx5600-ap-17479", "kagan-pc"]
 }
 
 variable "raw_retention_days" {
